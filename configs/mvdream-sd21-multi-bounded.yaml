@@ -11,8 +11,10 @@ data:
   # 0-4999: 64x64, >=5000: 256x256
   # width: [64, 256]
   # height: [64, 256]
-  width: [32, 128]
-  height: [32, 128]
+  # width: [32, 128]
+  # height: [32, 128]
+  width: [16, 64]
+  height: [16, 64]
   resolution_milestones: [5000]
   camera_distance_range: [0.8, 1.0] # relative
   fovy_range: [15, 60]
@@ -24,7 +26,7 @@ data:
   eval_camera_distance: 3.0
   eval_fovy_deg: 40.
 
-system_type: "mvdream-system-bounded"
+system_type: "mvdream-system-multi-bounded"
 system:
   geometry_type: "implicit-volume"
   geometry:
@@ -57,15 +59,17 @@ system:
     random_aug: true
     share_aug_bg: true
 
-  renderer_type: "nerf-volume-bounded-renderer"
+  renderer_type: "nerf-multi-volume-bounded-renderer"
   renderer:
     radius: ${system.geometry.radius}
     # num_samples_per_ray: 512
-    num_samples_per_ray: 2
+    num_samples_per_ray: 128
     # bound: [0.5, 0.5, 0.15] #前后, 左右，上下
     # bound_path: "bounds/combined_boundary.npy"
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
+  prompt_list: ['a cat ear', 'a woman face', 'a girl head with cat ears']
+  # prompt_list: ['a woman face', 'a girl head with cat ears']
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
     prompt: ???
