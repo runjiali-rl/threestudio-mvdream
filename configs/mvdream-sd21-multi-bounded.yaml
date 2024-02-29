@@ -68,7 +68,7 @@ system:
     # bound_path: "bounds/combined_boundary.npy"
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
-  prompt_list: ['a cat ear', 'a woman face', 'a girl head with cat ears']
+  prompt_list: ['a cat ear', 'an anime style girl(woman) face', 'a girl head with cat ears']
   # prompt_list: ['a woman face', 'a girl head with cat ears']
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
