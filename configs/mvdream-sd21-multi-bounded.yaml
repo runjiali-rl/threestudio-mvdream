@@ -13,8 +13,8 @@ data:
   # height: [64, 256]
   # width: [32, 128]
   # height: [32, 128]
-  width: [16, 64]
-  height: [16, 64]
+  width: [48, 196]
+  height: [48, 196]
   resolution_milestones: [5000]
   camera_distance_range: [0.8, 1.0] # relative
   fovy_range: [15, 60]
@@ -114,7 +114,7 @@ system:
         lr: 0.001
 
 trainer:
-  max_steps: 20000
+  max_steps: 10000
   log_every_n_steps: 1
   num_sanity_val_steps: 0
   val_check_interval: 200

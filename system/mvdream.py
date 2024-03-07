@@ -8,6 +8,9 @@ from threestudio.utils.misc import cleanup, get_device
 from threestudio.utils.ops import binary_cross_entropy, dot
 from threestudio.utils.typing import *
 import numpy as np
+from PIL import Image
+from diffusers.utils import export_to_gif
+import torch.nn.functional as F
 
 
 @threestudio.register("mvdream-system-multi-bounded")
@@ -49,6 +52,58 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
     def training_step(self, batch, batch_idx):
         
         out_list = [self(batch, bound) for bound in self.bound[:-1]]
+        # shift the image to the center
+        for idx, out in enumerate(out_list):
+            rendered_images = out["comp_rgb"]
+            # rendered_images_to_save = [Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))\
+            #                             for rendered_image_to_save in rendered_images.cpu().detach().numpy()]
+            # export_to_gif(rendered_images_to_save, f"rendered_images_{idx}.gif")
+
+            bound = self.bound[idx]
+            selected_idx = torch.logical_and(bound[:, :, 0] != 0, bound[:, :, 1] != 0)
+            i_indices, j_indices = torch.nonzero(selected_idx.float(), as_tuple=True)
+            bound_h, bound_w = bound.shape[0], bound.shape[1]
+            image_h, image_w = rendered_images.shape[1], rendered_images.shape[2]
+            x_max, x_min = int(i_indices.max()/bound_h*image_w), int(i_indices.min()/bound_h*image_w) # lateral
+            y_max, y_min = int(j_indices.max()/bound_w*image_w), int(j_indices.min()/bound_w*image_w) # frontal
+            z_max = int(((torch.max(bound[selected_idx])+1) /2)*image_h) + int(0.1*image_h)
+            z_min = int(((torch.min(bound[selected_idx])+1) /2)*image_h) - int(0.1*image_h)
+            z_min = max(z_min, 0)
+            z_max = min(z_max, image_h)
+            x_min = min(x_min, y_min) - int(0.1*image_h)
+            x_max = max(x_max, y_max) + int(0.1*image_h)
+            x_min = max(x_min, 0)
+            x_max = min(x_max, image_w)
+
+            cropped_images = []
+            for jdx, rendered_image_to_save in enumerate(rendered_images):
+                rendered_image_to_save = \
+                    rendered_image_to_save[(image_h - z_max):(image_h - z_min), (image_h - x_max):(image_h - x_min)]
+                rendered_image_to_save = F.interpolate(rendered_image_to_save.permute(2, 0, 1).unsqueeze(0),
+                                                       (image_h, image_w),
+                                                       mode='bilinear',
+                                                       align_corners=True)
+                cropped_images.append(rendered_image_to_save.squeeze(0).permute(1, 2, 0))
+            #covert list to tensor
+            cropped_images = torch.stack(cropped_images)
+            out_list[idx]["comp_rgb"] = cropped_images
+                
+            
+
+                # # rendered_image_to_save = F.interpolate(rendered_image_to_save.permute(2, 0, 1).unsqueeze(0),
+                # #                                        (image_h, image_w),
+                # #                                        mode='bilinear',
+                # #                                        align_corners=True)
+                # # rendered_image_to_save = rendered_image_to_save.squeeze(0).permute(1, 2, 0)
+                # rendered_image_to_save = rendered_image_to_save.cpu().detach().numpy()
+                # rendered_image_to_save = Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))
+                # rendered_image_to_save.save(f"rendered_images_{idx}_{jdx}.png")   
+
+
+            
+            stop = 1
+
+            
 
         guidance_out_list = [self.guidance(out["comp_rgb"], self.prompt_utils_list[idx], **batch) for idx, out in enumerate(out_list)]
 
@@ -145,7 +200,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         pass
 
     def test_step(self, batch, batch_idx):
-        out = self(batch)
+        out = self(batch, self.bound[-1])
         self.save_image_grid(
             f"it{self.true_global_step}-test/{batch['index'][0]}.png",
             (
