@@ -179,62 +179,19 @@ def create_cone_boundary(resolution: int,
 
 
 def add_boundary(boundaries: list) -> np.ndarray:
-    added_boundary = boundaries[0]
-    added_mask = np.logical_and(boundaries[0][:, :, 0] != 0, boundaries[0][:, :, 1] != 0)
-    for idx, boundary in enumerate(boundaries):
-        # get the mask for the current boundary
-        mask = np.logical_and(boundary[:, :, 0] != 0, boundary[:, :, 1] != 0)
-        mutual_mask = np.logical_and(mask, added_mask)
-        
-        cv2.imwrite(f"mask_{idx}.png", mask.astype(np.uint8)*255)
-        cv2.imwrite(f"mutual_mask_{idx}.png", mutual_mask.astype(np.uint8)*255)
-   
-        added_boundary[mutual_mask, 1] = np.maximum(added_boundary[mutual_mask, 1],
-                                                    boundary[mutual_mask, 1])
-        added_boundary[mutual_mask, 0] = np.minimum(added_boundary[mutual_mask, 0],
-                                                    boundary[mutual_mask, 0])
-        # print(np.sum(mask))
-        inverse_mask = np.logical_not(added_mask)
-
-        # save the inverse mask as png
-        cv2.imwrite(f"inverse_mask_{idx}.png", inverse_mask.astype(np.uint8)*255)
-
-        added_boundary[inverse_mask, 1]  = boundary[inverse_mask, 1]
-        added_boundary[inverse_mask, 0]  = boundary[inverse_mask, 0]
-        cv2.imwrite(f"added_mask_{idx}.png", added_mask.astype(np.uint8)*255)
-        added_mask = np.logical_or(added_mask, mask)
-        # print(np.sum(inverse_mask))
+    added_boundary = np.zeros_like(boundaries[0])
+    for boundary in boundaries:
+        added_boundary = np.maximum(added_boundary, boundary)
+  
     return added_boundary
 
 
 def subtract_boundary(boundaries: list) -> np.ndarray:
     """
-    Subtract the second boundary from the first boundary,
-    the second boundary must be a subset of the first boundary
+    Subtract the second boundary from the first boundary
     """
-    assert len(boundaries) == 2, "Only two boundaries can be subtracted"
-    assert np.min(boundaries[0][:, :, 0]) <= np.min(boundaries[1][:, :, 0]) and\
-          np.max(boundaries[0][:, :, 1]) >= np.max(boundaries[1][:, :, 1]), \
-        "The second boundary must be a subset of the first boundary"
-    subtracted_boundary = deepcopy(boundaries[0])
-    # select the mask where the subtract boundary is defined
-    small_mask = boundaries[1][:, :, 0] != boundaries[1][:, :, 1]
-    big_mask = boundaries[0][:, :, 0] != boundaries[0][:, :, 1]
-    mutual_mask = np.logical_and(small_mask, big_mask)
-    overlap_mask = np.logical_and(mutual_mask, small_mask)
-    between_mask = np.logical_and(overlap_mask, np.logical_not(small_mask))
-
-    # if the subtracted boundary is at the bottom
-    if np.max(boundaries[1][mutual_mask, 1]) < np.max(boundaries[0][mutual_mask, 1]): 
-        subtracted_boundary[mutual_mask, 0] = boundaries[1][mutual_mask, 1]
-    else: # if the subtracted boundary is at the top
-        subtracted_boundary[mutual_mask, 1] = boundaries[1][mutual_mask, 0]
-    if np.sum(between_mask) > 0:
-        subtracted_boundary[between_mask, 1] = boundaries[1][between_mask, 0]
-    
-    filter_mask = np.logical_and(subtracted_boundary[:, :, 0] == \
-                                 subtracted_boundary[:, :, 1], subtracted_boundary[:, :, 0] != 0)
-    subtracted_boundary[filter_mask] = 0
+    subtracted_boundary = boundaries[0] - boundaries[1]
+    subtracted_boundary[subtracted_boundary < 0] = 0
 
     return subtracted_boundary
 
@@ -247,17 +204,12 @@ def combine_boundary(boundaries: list,
     
 
     combined_boundary = add_boundary(boundaries)
-    sub_combined_boundary_list = []
-    for i in range(len(boundaries)-1):
-        # add boundaries except for the ith boundary
-        sub_combined_boundary = add_boundary(boundaries[:i] + boundaries[i+1:])
-        sub_combined_boundary_list.append(sub_combined_boundary)
+
     if use_subtraction:
-        for i in range(len(boundaries)-1):
-            if igore_idx[i]:
+        for i in range(1, len(boundaries)-1):
+            if igore_idx and igore_idx[i]:
                 continue
-            boundaries[i] = subtract_boundary(
-                [combined_boundary, sub_combined_boundary_list[i]])
+            boundaries[i] = subtract_boundary([boundaries[i], add_boundary(boundaries[:i])])
     if include_all:
         boundaries.append(combined_boundary)
 
@@ -285,10 +237,10 @@ if __name__ == "__main__":
 
 
     ball_radius = 0.3
-    ball_center_shift = (0, 0, 0.2)
+    ball_center_shift = (0, 0, 0.3)
     ball_boundary = create_sphere_boundary(resolution, ball_radius, ball_center_shift)
 
-    np.save(os.path.join(save_dir, "ball_mask_boundary.npy"), ball_boundary[None, :, :, :])
+    # np.save(os.path.join(save_dir, "ball_mask_boundary.npy"), ball_boundary[None, :, :, :])
     # rectangle_width = 0.2 # lateral view dimension
     # rectangle_height = 0.2 # front view dimension
     # rectangle_thickness = 0.21 # z dimension
@@ -299,34 +251,30 @@ if __name__ == "__main__":
     #                                                 rectangle_thickness,
     #                                                 rectangle_shift)
 
-    rectangle_width = 0.3 # lateral view dimension
-    rectangle_height = 0.2 # front view dimension
-    rectangle_thickness = 0.4 # z dimension
-    rectangle_shift = (0, 0, -0.399)
+    rectangle_width = 0.6 # lateral view dimension
+    rectangle_height = 0.6 # front view dimension
+    rectangle_thickness = 0.8 # z dimension
+    rectangle_shift = (0, 0, -0.299)
     rectangle_boundary_3 = create_rectangle_boundary(resolution,
                                                     rectangle_width,
                                                     rectangle_height,
                                                     rectangle_thickness,
                                                     rectangle_shift)
     
-    np.save(os.path.join(save_dir, "rectangle_mask_boundary.npy"), rectangle_boundary_3[None, :, :, :])
+    # np.save(os.path.join(save_dir, "rectangle_mask_boundary.npy"), rectangle_boundary_3[None, :, :, :])
 
     # combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3],
     #                                      include_all=True,
     #                                      use_subtraction=True,
     #                                      igore_idx=[True, False, False])
 
-    # combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3],
-    #                                      include_all=True,
-    #                                      use_subtraction=True,
-    #                                      igore_idx=[True, False, False])
-    # print(combined_boundary.shape)
-    # mask = np.logical_and(combined_boundary[-1, :, :, 0] != 0 , combined_boundary[-1, :, :, 1] != 0)
-    # cv2.imwrite("final_mask.png", mask.astype(np.uint8)*255)
-    # np.save(os.path.join(save_dir, "combined_boundary_3body.npy"), combined_boundary)
-    # for i in range(combined_boundary.shape[0]):
-    #     print(np.min(combined_boundary[i, :, :, 0][combined_boundary[i, :, :, 0]!=0]),
-    #           np.max(combined_boundary[i, :, :, 1][combined_boundary[i, :, :, 1]!=0]))
+    combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3],
+                                         include_all=True,
+                                         use_subtraction=True,
+                                         igore_idx=[False, False, False])
+    print(combined_boundary.shape)
+    mask = np.logical_and(combined_boundary[-1, :, :, 0] != 0 , combined_boundary[-1, :, :, 1] != 0)
+    np.save(os.path.join(save_dir, "combined_boundary_3body.npy"), combined_boundary)
 
 
 

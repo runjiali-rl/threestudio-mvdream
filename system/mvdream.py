@@ -50,9 +50,9 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         return self.renderer(**batch, bound=bound)
 
     def training_step(self, batch, batch_idx):
-        loss_weight = [0.5, 0.5, 1]
-        # out_list = [self(batch, bound) for bound in self.bound[:-1]]
-        out_list = [self(batch, bound) for bound in self.bound]
+        loss_weight = [1, 1, 1]
+        out_list = [self(batch, bound) for bound in self.bound[:-1]]
+        # out_list = [self(batch, bound) for bound in self.bound]
         # shift the image to the center
         for idx, out in enumerate(out_list):
             rendered_images = out["comp_rgb"]

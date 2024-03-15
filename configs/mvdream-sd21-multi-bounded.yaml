@@ -48,9 +48,9 @@ system:
       base_resolution: 16
       per_level_scale: 1.447269237440378 # max resolution 4096
 
-  # bound_path: "custom/threestudio-mvdream/bounds/combined_boundary_3body.npy"
+  bound_path: "custom/threestudio-mvdream/bounds/combined_boundary_3body.npy"
 
-  bound_path: "custom/threestudio-mvdream/bounds/ball_mask_boundary.npy"
+  # bound_path: "custom/threestudio-mvdream/bounds/ball_mask_boundary.npy"
 
   material_type: "no-material"
   material:
@@ -68,8 +68,6 @@ system:
     radius: ${system.geometry.radius}
     # num_samples_per_ray: 512
     num_samples_per_ray: 128
-    # bound: [0.5, 0.5, 0.15] #前后, 左右，上下
-    # bound_path: "bounds/combined_boundary.npy"
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
   prompt_list: ['an anime style girl(woman) face', 'a bird body', 'an anime style girl(woman) head with cat ears connected to a bird body']
