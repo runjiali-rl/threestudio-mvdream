@@ -13,8 +13,10 @@ data:
   # height: [64, 256]
   # width: [32, 128]
   # height: [32, 128]
-  width: [48, 196]
-  height: [48, 196]
+  # width: [128, 512]
+  # height: [128, 512]
+  width: [96, 384]
+  height: [96, 384]
   resolution_milestones: [5000]
   camera_distance_range: [0.8, 1.0] # relative
   fovy_range: [15, 60]
@@ -46,7 +48,7 @@ system:
       base_resolution: 16
       per_level_scale: 1.447269237440378 # max resolution 4096
 
-  bound_path: "bounds/combined_boundary.npy"
+  bound_path: "bounds/combined_boundary_3body.npy"
 
   material_type: "no-material"
   material:
@@ -68,7 +70,7 @@ system:
     # bound_path: "bounds/combined_boundary.npy"
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
-  prompt_list: ['a cat ear', 'an anime style girl(woman) face', 'a girl head with cat ears']
+  prompt_list: ['an anime style girl(woman) face', 'a bird body', 'an anime style girl(woman) head with cat ears connected to a bird body']
   # prompt_list: ['a woman face', 'a girl head with cat ears']
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
@@ -114,7 +116,7 @@ system:
         lr: 0.001
 
 trainer:
-  max_steps: 10000
+  max_steps: 50000
   log_every_n_steps: 1
   num_sanity_val_steps: 0
   val_check_interval: 200

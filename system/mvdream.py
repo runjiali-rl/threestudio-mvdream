@@ -50,8 +50,9 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         return self.renderer(**batch, bound=bound)
 
     def training_step(self, batch, batch_idx):
-        
+        loss_weight = [0.5, 0.5, 1]
         out_list = [self(batch, bound) for bound in self.bound[:-1]]
+        # out_list = [self(batch, bound) for bound in self.bound]
         # shift the image to the center
         for idx, out in enumerate(out_list):
             rendered_images = out["comp_rgb"]
@@ -66,6 +67,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             image_h, image_w = rendered_images.shape[1], rendered_images.shape[2]
             x_max, x_min = int(i_indices.max()/bound_h*image_w), int(i_indices.min()/bound_h*image_w) # lateral
             y_max, y_min = int(j_indices.max()/bound_w*image_w), int(j_indices.min()/bound_w*image_w) # frontal
+            center_x, center_y = (x_max + x_min) / 2, (y_max + y_min) / 2
             z_max = int(((torch.max(bound[selected_idx])+1) /2)*image_h) + int(0.1*image_h)
             z_min = int(((torch.min(bound[selected_idx])+1) /2)*image_h) - int(0.1*image_h)
             z_min = max(z_min, 0)
@@ -84,20 +86,16 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                                                        mode='bilinear',
                                                        align_corners=True)
                 cropped_images.append(rendered_image_to_save.squeeze(0).permute(1, 2, 0))
+
+                # rendered_image_to_save = cropped_images[-1].cpu().detach().numpy()
+                # rendered_image_to_save = Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))
+                # rendered_image_to_save.save(f"rendered_images_{idx}_{jdx}.png")   
             #covert list to tensor
             cropped_images = torch.stack(cropped_images)
             out_list[idx]["comp_rgb"] = cropped_images
-                
-            
+        
 
-                # # rendered_image_to_save = F.interpolate(rendered_image_to_save.permute(2, 0, 1).unsqueeze(0),
-                # #                                        (image_h, image_w),
-                # #                                        mode='bilinear',
-                # #                                        align_corners=True)
-                # # rendered_image_to_save = rendered_image_to_save.squeeze(0).permute(1, 2, 0)
-                # rendered_image_to_save = rendered_image_to_save.cpu().detach().numpy()
-                # rendered_image_to_save = Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))
-                # rendered_image_to_save.save(f"rendered_images_{idx}_{jdx}.png")   
+ 
 
 
             
@@ -108,11 +106,13 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         guidance_out_list = [self.guidance(out["comp_rgb"], self.prompt_utils_list[idx], **batch) for idx, out in enumerate(out_list)]
 
         loss = 0.0
+        subpart_idx = 0
         for out, guidance_out in zip(out_list, guidance_out_list):
+            sub_loss = 0.0
             for name, value in guidance_out.items():
                 self.log(f"train/{name}", value)
                 if name.startswith("loss_"):
-                    loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
+                    sub_loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
 
             if self.C(self.cfg.loss.lambda_orient) > 0:
                 if "normal" not in out:
@@ -124,25 +124,25 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                     * dot(out["normal"], out["t_dirs"]).clamp_min(0.0) ** 2
                 ).sum() / (out["opacity"] > 0).sum()
                 self.log("train/loss_orient", loss_orient)
-                loss += loss_orient * self.C(self.cfg.loss.lambda_orient)
+                sub_loss += loss_orient * self.C(self.cfg.loss.lambda_orient)
 
             if self.C(self.cfg.loss.lambda_sparsity) > 0:
                 loss_sparsity = (out["opacity"] ** 2 + 0.01).sqrt().mean()
                 self.log("train/loss_sparsity", loss_sparsity)
-                loss += loss_sparsity * self.C(self.cfg.loss.lambda_sparsity)
+                sub_loss += loss_sparsity * self.C(self.cfg.loss.lambda_sparsity)
 
             if self.C(self.cfg.loss.lambda_opaque) > 0:
                 opacity_clamped = out["opacity"].clamp(1.0e-3, 1.0 - 1.0e-3)
                 loss_opaque = binary_cross_entropy(opacity_clamped, opacity_clamped)
                 self.log("train/loss_opaque", loss_opaque)
-                loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
+                sub_loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
 
             # z variance loss proposed in HiFA: http://arxiv.org/abs/2305.18766
             # helps reduce floaters and produce solid geometry
             if self.C(self.cfg.loss.lambda_z_variance) > 0:
                 loss_z_variance = out["z_variance"][out["opacity"] > 0.5].mean()
                 self.log("train/loss_z_variance", loss_z_variance)
-                loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
+                sub_loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
 
             if (
                 hasattr(self.cfg.loss, "lambda_eikonal")
@@ -152,10 +152,12 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                     (torch.linalg.norm(out["sdf_grad"], ord=2, dim=-1) - 1.0) ** 2
                 ).mean()
                 self.log("train/loss_eikonal", loss_eikonal)
-                loss += loss_eikonal * self.C(self.cfg.loss.lambda_eikonal)
+                sub_loss += loss_eikonal * self.C(self.cfg.loss.lambda_eikonal)
 
             for name, value in self.cfg.loss.items():
                 self.log(f"train_params/{name}", self.C(value))
+            loss += sub_loss * loss_weight[subpart_idx]
+            subpart_idx += 1
 
         return {"loss": loss}
 
