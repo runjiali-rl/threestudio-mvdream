@@ -51,27 +51,23 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
 
     def training_step(self, batch, batch_idx):
         loss_weight = [0.5, 0.5, 1]
-        out_list = [self(batch, bound) for bound in self.bound[:-1]]
-        # out_list = [self(batch, bound) for bound in self.bound]
+        # out_list = [self(batch, bound) for bound in self.bound[:-1]]
+        out_list = [self(batch, bound) for bound in self.bound]
         # shift the image to the center
         for idx, out in enumerate(out_list):
             rendered_images = out["comp_rgb"]
             # rendered_images_to_save = [Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))\
             #                             for rendered_image_to_save in rendered_images.cpu().detach().numpy()]
             # export_to_gif(rendered_images_to_save, f"rendered_images_{idx}.gif")
-
             bound = self.bound[idx]
-            selected_idx = torch.logical_and(bound[:, :, 0] != 0, bound[:, :, 1] != 0)
-            i_indices, j_indices = torch.nonzero(selected_idx.float(), as_tuple=True)
-            bound_h, bound_w = bound.shape[0], bound.shape[1]
+            i_indices, j_indices, k_indices = torch.nonzero(bound.float(), as_tuple=True)
+            bound_h, bound_w, bound_z= bound.shape[0], bound.shape[1], bound.shape[2]
             image_h, image_w = rendered_images.shape[1], rendered_images.shape[2]
             x_max, x_min = int(i_indices.max()/bound_h*image_w), int(i_indices.min()/bound_h*image_w) # lateral
             y_max, y_min = int(j_indices.max()/bound_w*image_w), int(j_indices.min()/bound_w*image_w) # frontal
-            center_x, center_y = (x_max + x_min) / 2, (y_max + y_min) / 2
-            z_max = int(((torch.max(bound[selected_idx])+1) /2)*image_h) + int(0.1*image_h)
-            z_min = int(((torch.min(bound[selected_idx])+1) /2)*image_h) - int(0.1*image_h)
-            z_min = max(z_min, 0)
-            z_max = min(z_max, image_h)
+            z_max, z_min = int(k_indices.max()/bound_h*image_h), int(k_indices.min()/bound_h*image_h) # sagittal
+            z_min = max(z_min - int(0.1*image_h), 0)
+            z_max = min(z_max + int(0.1*image_h), image_h)
             x_min = min(x_min, y_min) - int(0.1*image_h)
             x_max = max(x_max, y_max) + int(0.1*image_h)
             x_min = max(x_min, 0)
@@ -87,9 +83,9 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                                                        align_corners=True)
                 cropped_images.append(rendered_image_to_save.squeeze(0).permute(1, 2, 0))
 
-                # rendered_image_to_save = cropped_images[-1].cpu().detach().numpy()
-                # rendered_image_to_save = Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))
-                # rendered_image_to_save.save(f"rendered_images_{idx}_{jdx}.png")   
+                rendered_image_to_save = cropped_images[-1].cpu().detach().numpy()
+                rendered_image_to_save = Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))
+                rendered_image_to_save.save(f"rendered_images_{idx}_{jdx}.png")   
             #covert list to tensor
             cropped_images = torch.stack(cropped_images)
             out_list[idx]["comp_rgb"] = cropped_images
