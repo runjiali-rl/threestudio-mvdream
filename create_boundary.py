@@ -103,19 +103,6 @@ def create_sphere_boundary(resolution: int,
             "Boundary thickness is too large for the given center"
 
     boundary_array = np.zeros((resolution, resolution, resolution), dtype=np.float32)
-    # x, y, = np.ogrid[:resolution, :resolution]
-    # mask = (x - resolution / 2) ** 2 + (y - resolution / 2) ** 2 <= (boundary_radius * resolution//2) ** 2
-    # X, Y = np.meshgrid(np.arange(resolution), np.arange(resolution))
-    # h = (boundary_radius * resolution//2) ** 2 - (X[mask] - resolution / 2) ** 2 - (Y[mask] - resolution / 2) ** 2
-    # z_1 = -np.sqrt(h)*2
-    # z_2 = np.sqrt(h)*2
-    # for single_z1, single_z2 in zip(z_1, z_2):
-    #     assert single_z1 <= single_z2, "z_1 must be less than z_2"
-    # # ensure 
-    # normalized_z_1 = z_1 / resolution
-    # normalized_z_2 = z_2 / resolution
-    # boundary_array[mask, 0] = normalized_z_1
-    # boundary_array[mask, 1] = normalized_z_2
     x, y, z = np.ogrid[:resolution, :resolution, :resolution]
     mask = (x - resolution // 2) ** 2 + (y - resolution // 2) ** 2 + (z - resolution // 2) ** 2 <= (boundary_radius * resolution//2) ** 2
     boundary_array[mask] = 1
@@ -206,7 +193,7 @@ def combine_boundary(boundaries: list,
     combined_boundary = add_boundary(boundaries)
 
     if use_subtraction:
-        for i in range(1, len(boundaries)-1):
+        for i in range(1, len(boundaries)):
             if igore_idx and igore_idx[i]:
                 continue
             boundaries[i] = subtract_boundary([boundaries[i], add_boundary(boundaries[:i])])
@@ -225,10 +212,10 @@ if __name__ == "__main__":
     save_dir = "custom/threestudio-mvdream/bounds"
     resolution = 512
 
-    rectangle_width = 0.14 # lateral view dimension
-    rectangle_height = 0.27 # front view dimension
-    rectangle_thickness = 0.05 # z dimension
-    rectangle_shift = (0, 0, 0.5)
+    rectangle_width = 0.3 # lateral view dimension
+    rectangle_height = 0.52 # front view dimension
+    rectangle_thickness = 0.3 # z dimension
+    rectangle_shift = (0, 0, 0.55)
     rectangle_boundary_1 = create_rectangle_boundary(resolution,
                                                    rectangle_width,
                                                    rectangle_height,
@@ -237,44 +224,37 @@ if __name__ == "__main__":
 
 
     ball_radius = 0.3
-    ball_center_shift = (0, 0, 0.3)
+    ball_center_shift = (0, 0, 0.27)
     ball_boundary = create_sphere_boundary(resolution, ball_radius, ball_center_shift)
 
-    # np.save(os.path.join(save_dir, "ball_mask_boundary.npy"), ball_boundary[None, :, :, :])
-    # rectangle_width = 0.2 # lateral view dimension
-    # rectangle_height = 0.2 # front view dimension
-    # rectangle_thickness = 0.21 # z dimension
-    # rectangle_shift = (0, 0, 0.2)
-    # rectangle_boundary_2 = create_rectangle_boundary(resolution,
-    #                                                 rectangle_width,
-    #                                                 rectangle_height,
-    #                                                 rectangle_thickness,
-    #                                                 rectangle_shift)
 
-    rectangle_width = 0.6 # lateral view dimension
-    rectangle_height = 0.6 # front view dimension
-    rectangle_thickness = 0.8 # z dimension
-    rectangle_shift = (0, 0, -0.299)
+
+    rectangle_width = 0.7 # lateral view dimension
+    rectangle_height = 0.45 # front view dimension
+    rectangle_thickness = 0.75 # z dimension
+    rectangle_shift = (-0.2, 0, -0)
     rectangle_boundary_3 = create_rectangle_boundary(resolution,
                                                     rectangle_width,
                                                     rectangle_height,
                                                     rectangle_thickness,
                                                     rectangle_shift)
-    
-    # np.save(os.path.join(save_dir, "rectangle_mask_boundary.npy"), rectangle_boundary_3[None, :, :, :])
 
-    # combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3],
+    # combined_head_boundary = add_boundary([ball_boundary, rectangle_boundary_1])
+    # combined_boundary = combine_boundary([ball_boundary,
+    #                                       rectangle_boundary_3,
+    #                                       rectangle_boundary_1],
     #                                      include_all=True,
     #                                      use_subtraction=True,
-    #                                      igore_idx=[True, False, False])
+    #                                      igore_idx=[False, False, False])
 
-    combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3],
-                                         include_all=True,
-                                         use_subtraction=True,
-                                         igore_idx=[False, False, False])
+    combined_boundary = combine_boundary([ball_boundary,
+                                        rectangle_boundary_3],
+                                        include_all=True,
+                                        use_subtraction=True,
+                                        igore_idx=[False, False, False])
+
     print(combined_boundary.shape)
-    mask = np.logical_and(combined_boundary[-1, :, :, 0] != 0 , combined_boundary[-1, :, :, 1] != 0)
-    np.save(os.path.join(save_dir, "combined_boundary_3body.npy"), combined_boundary)
+    np.save(os.path.join(save_dir, "lion_sheep.npy"), combined_boundary)
 
 
 

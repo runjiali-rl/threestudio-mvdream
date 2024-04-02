@@ -20,6 +20,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         visualize_samples: bool = False
         bound_path: str = None
         prompt_list: List[str] = None
+        loss_weight: List[float] = None
 
     cfg: Config
 
@@ -43,6 +44,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         for prompt_processor in self.prompt_processor_list:
             prompt_processor = prompt_processor()
             self.prompt_utils_list.append(prompt_processor)
+        self.loss_weight = self.cfg.loss_weight
 
 
     def forward(self, batch: Dict[str, Any],
@@ -50,12 +52,18 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         return self.renderer(**batch, bound=bound)
 
     def training_step(self, batch, batch_idx):
-        loss_weight = [1, 1, 1]
-        out_list = [self(batch, bound) for bound in self.bound[:-1]]
-        # out_list = [self(batch, bound) for bound in self.bound]
+        # out_list = [self(batch, bound) for bound in self.bound[:-1]]
+        if batch_idx > 10000:
+            out_list = [self(batch, bound) for bound in [self.bound[-1]]]
+            self.prompt_utils_list = [self.prompt_utils_list[-1]]
+            self.loss_weight = [self.loss_weight[-1]]
+        else:
+            out_list = [self(batch, bound) for bound in self.bound]
         # shift the image to the center
         for idx, out in enumerate(out_list):
             rendered_images = out["comp_rgb"]
+            opacity = out["opacity"]
+            opacity_mask = opacity > 0.2
             # rendered_images_to_save = [Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))\
             #                             for rendered_image_to_save in rendered_images.cpu().detach().numpy()]
             # export_to_gif(rendered_images_to_save, f"rendered_images_{idx}.gif")
@@ -65,7 +73,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             image_h, image_w = rendered_images.shape[1], rendered_images.shape[2]
             x_max, x_min = int(i_indices.max()/bound_h*image_w), int(i_indices.min()/bound_h*image_w) # lateral
             y_max, y_min = int(j_indices.max()/bound_w*image_w), int(j_indices.min()/bound_w*image_w) # frontal
-            z_max, z_min = int(k_indices.max()/bound_h*image_h), int(k_indices.min()/bound_h*image_h) # sagittal
+            z_max, z_min = int(k_indices.max()/bound_z*image_h), int(k_indices.min()/bound_z*image_h) # sagittal
             z_min = max(z_min - int(0.1*image_h), 0)
             z_max = min(z_max + int(0.1*image_h), image_h)
             x_min = min(x_min, y_min) - int(0.1*image_h)
@@ -75,9 +83,24 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
 
             cropped_images = []
             for jdx, rendered_image_to_save in enumerate(rendered_images):
-                rendered_image_to_save = \
-                    rendered_image_to_save[(image_h - z_max):(image_h - z_min), (image_h - x_max):(image_h - x_min)]
-                rendered_image_to_save = F.interpolate(rendered_image_to_save.permute(2, 0, 1).unsqueeze(0),
+                single_view_opacity_mask = opacity_mask[jdx, :, :, 0]
+                opacity_i, opacity_j = torch.nonzero(single_view_opacity_mask, as_tuple=True)
+                if len(opacity_i) != 0:
+                    opacity_j_min, opacity_j_max = opacity_j.min(), opacity_j.max()
+                    # single_view_min_x = max(image_h - x_max, opacity_j_min-int(0.1*image_h))
+                    # single_view_max_x = min(image_h - x_min, opacity_j_max+int(0.1*image_h))
+                    single_view_min_x = opacity_j_min-int(0.1*image_h)
+                    single_view_max_x =  opacity_j_max+int(0.1*image_h)
+                    single_view_min_y = opacity_i.min()-int(0.1*image_h)
+                    single_view_max_y = opacity_i.max()+int(0.1*image_h)
+                
+
+                cropped_rendered_image_to_save = \
+                    rendered_image_to_save[single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
+                h, w = cropped_rendered_image_to_save.shape[0], cropped_rendered_image_to_save.shape[1]
+                if h==0 or w==0:
+                    cropped_rendered_image_to_save = rendered_image_to_save[image_h-z_max:image_h-z_min, image_h-x_max:image_h-x_min]
+                rendered_image_to_save = F.interpolate(cropped_rendered_image_to_save.permute(2, 0, 1).unsqueeze(0),
                                                        (image_h, image_w),
                                                        mode='bilinear',
                                                        align_corners=True)
@@ -91,13 +114,6 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             out_list[idx]["comp_rgb"] = cropped_images
         
 
- 
-
-
-            
-            stop = 1
-
-            
 
         guidance_out_list = [self.guidance(out["comp_rgb"], self.prompt_utils_list[idx], **batch) for idx, out in enumerate(out_list)]
 
@@ -152,7 +168,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
 
             for name, value in self.cfg.loss.items():
                 self.log(f"train_params/{name}", self.C(value))
-            loss += sub_loss * loss_weight[subpart_idx]
+            loss += sub_loss * self.loss_weight[subpart_idx]
             subpart_idx += 1
 
         return {"loss": loss}
