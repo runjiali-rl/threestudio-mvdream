@@ -52,13 +52,11 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         return self.renderer(**batch, bound=bound)
 
     def training_step(self, batch, batch_idx):
-        # out_list = [self(batch, bound) for bound in self.bound[:-1]]
-        if batch_idx > 10000:
-            out_list = [self(batch, bound) for bound in [self.bound[-1]]]
-            self.prompt_utils_list = [self.prompt_utils_list[-1]]
-            self.loss_weight = [self.loss_weight[-1]]
-        else:
-            out_list = [self(batch, bound) for bound in self.bound]
+        iter_idx = batch_idx%len(self.bound)
+        bound_list = [self.bound[iter_idx]]
+        loss_weight_list = [self.loss_weight[iter_idx]]
+        out_list = [self(batch, bound) for bound in bound_list]
+        prompt_utils_list = [self.prompt_utils_list[iter_idx]]
         # shift the image to the center
         for idx, out in enumerate(out_list):
             rendered_images = out["comp_rgb"]
@@ -115,7 +113,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         
 
 
-        guidance_out_list = [self.guidance(out["comp_rgb"], self.prompt_utils_list[idx], **batch) for idx, out in enumerate(out_list)]
+        guidance_out_list = [self.guidance(out["comp_rgb"], prompt_utils_list[idx], **batch) for idx, out in enumerate(out_list)]
 
         loss = 0.0
         subpart_idx = 0
@@ -168,7 +166,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
 
             for name, value in self.cfg.loss.items():
                 self.log(f"train_params/{name}", self.C(value))
-            loss += sub_loss * self.loss_weight[subpart_idx]
+            loss += sub_loss * loss_weight_list[subpart_idx]
             subpart_idx += 1
 
         return {"loss": loss}

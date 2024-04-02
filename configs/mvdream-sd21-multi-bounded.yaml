@@ -3,7 +3,7 @@ tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
 
-data_type: "mvdream-random-multiview-camera-datamodule"
+data_type: "mvdream-consecutive-random-multiview-camera-datamodule"
 data:
   # batch_size: [8,4]
   batch_size: [8,4]
@@ -27,6 +27,7 @@ data:
   n_val_views: 4
   eval_camera_distance: 3.0
   eval_fovy_deg: 40.
+  n_times: 3
 
 system_type: "mvdream-system-multi-bounded"
 system:
@@ -75,7 +76,7 @@ system:
   prompt_processor_type: "stable-diffusion-prompt-processor"
   # prompt_list: ['an anime style girl(woman) face', 'a dog body', 'a cat ear', an anime style girl(woman) head with cat ears and a cat body']
   # loss_weight: [0.7, 1.2, 0.3, 1]
-  prompt_list: ['a dinosaur head', 'a sheep body', a dinosaur head with a sheep body']
+  prompt_list: ['a dinosaur head', 'a sheep body', a dinosaur head connected to a sheep body smoothly']
   loss_weight: [1, 1.2, 1]
   # prompt_list: ['an anime style girl(woman) face', 'a dog body', 'a cat ear', an anime style girl(woman) head with cat ears and a cat body', 'an anime style girl(woman) face with cat ears']
   # loss_weight: [0.7, 0.8, 0.3, 2, 0.5]
