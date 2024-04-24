@@ -3,13 +3,20 @@ tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
 
-data_type: "mvdream-random-multiview-camera-datamodule"
+data_type: "mvdream-consecutive-random-multiview-camera-datamodule"
 data:
-  batch_size: [8,4]
+  # batch_size: [8,4]
+  batch_size: [4,4]
   n_view: 4
   # 0-4999: 64x64, >=5000: 256x256
-  width: [64, 256]
-  height: [64, 256]
+  # width: [64, 256]
+  # height: [64, 256]
+  # width: [32, 128]
+  # height: [32, 128]
+  # width: [128, 512]
+  # height: [128, 512]
+  width: [96, 384]
+  height: [96, 384]
   resolution_milestones: [5000]
   camera_distance_range: [0.8, 1.0] # relative
   fovy_range: [15, 60]
@@ -20,13 +27,14 @@ data:
   n_val_views: 4
   eval_camera_distance: 3.0
   eval_fovy_deg: 40.
+  n_times: 3
 
-system_type: "mvdream-system"
+system_type: "mvdream-system-multi-bounded"
 system:
   geometry_type: "implicit-volume"
   geometry:
     radius: 1.0
-    normal_type: null
+    normal_type: "analytic"
 
     density_bias: "blob_magic3d"
     density_activation: softplus
@@ -41,10 +49,20 @@ system:
       base_resolution: 16
       per_level_scale: 1.447269237440378 # max resolution 4096
 
+  # bound_path: "custom/threestudio-mvdream/bounds/combined_boundary_3body_head.npy"
+  # bound_path: "custom/threestudio-mvdream/bounds/combined_boundary_3body.npy"
+  # bound_path: "custom/threestudio-mvdream/bounds/cat_girl_dog.npy"
+  # bound_path: "custom/threestudio-mvdream/bounds/lion_sheep.npy"
+  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball.npy"
+  # bound_intersection_path: "custom/threestudio-mvdream/bounds/lion_sheep_intersection.npy"
+
+  # bound_path: "custom/threestudio-mvdream/bounds/ball_mask_boundary.npy"
+  use_iterative: True
   material_type: "no-material"
   material:
     n_output_dims: 3
     color_activation: sigmoid
+    requires_normal: True
 
   background_type: "mvdream-neural-environment-map-background"
   background:
@@ -52,12 +70,18 @@ system:
     random_aug: true
     share_aug_bg: true
 
-  renderer_type: "nerf-volume-renderer"
+  renderer_type: "nerf-gaussian-volume-bounded-renderer"
+  # renderer_type: "nerf-multi-volume-bounded-renderer"
   renderer:
     radius: ${system.geometry.radius}
+    # num_samples_per_ray: 512
     num_samples_per_ray: 128
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
+
+  prompt_list: ['a lion head', 'a sheep body', a lion head connected to a sheep body smoothly']
+  loss_weight: [1, 1, 0]
+
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
     prompt: ???
@@ -66,6 +90,7 @@ system:
     back_threshold: 30.
 
   guidance_type: "mvdream-multiview-diffusion-guidance"
+  geometry_guidance_type: "mvdream-multiview-dynamic-geometry-diffusion-guidance"
   guidance:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
@@ -74,6 +99,22 @@ system:
     max_step_percent: [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
+  
+  use_single_view: False
+  use_geometry_sds: False
+  use_2d_recentering: True
+  visualize: True
+
+  single_view_prompt_processor_type: "deep-floyd-prompt-processor"
+  single_view_prompt_processor:
+    prompt: ???
+    negative_prompt: "ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions"
+
+
+  single_view_guidance_type: "deep-floyd-guidance"
+  single_view_guidance:
+    enable_memory_efficient_attention: True
+    enable_sequential_cpu_offload: True
 
   loggers:
     wandb:
@@ -82,10 +123,11 @@ system:
 
   loss:
     lambda_sds: 1.
-    lambda_orient: 0.
-    lambda_sparsity: 0.
+    lambda_orient: 1500
+    lambda_sparsity: 0
     lambda_opaque: 0.
-    lambda_z_variance: 0.
+    lambda_z_variance: 10
+    
   optimizer:
     name: AdamW
     args:
@@ -102,12 +144,12 @@ system:
         lr: 0.001
 
 trainer:
-  max_steps: 10000
+  max_steps: 9000
   log_every_n_steps: 1
   num_sanity_val_steps: 0
   val_check_interval: 200
   enable_progress_bar: true
-  precision: 16-mixed
+  precision: '16'
 
 checkpoint:
   save_last: true

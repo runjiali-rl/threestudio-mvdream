@@ -208,36 +208,58 @@ def combine_boundary(boundaries: list,
     return combined_boundary
 
 
+def create_intersection(boundaries: list) -> np.ndarray:
+    intersection_list = []
+    for i in range(1, len(boundaries)):
+        for j in range(i):
+            intersection = np.logical_and(boundaries[i], boundaries[j])
+            intersection_list.append(intersection)
+    
+    return np.array(intersection_list)
+
+
 if __name__ == "__main__":
     save_dir = "custom/threestudio-mvdream/bounds"
     resolution = 512
 
-    rectangle_width = 0.3 # lateral view dimension
-    rectangle_height = 0.52 # front view dimension
-    rectangle_thickness = 0.3 # z dimension
-    rectangle_shift = (0, 0, 0.55)
-    rectangle_boundary_1 = create_rectangle_boundary(resolution,
-                                                   rectangle_width,
-                                                   rectangle_height,
-                                                   rectangle_thickness,
-                                                   rectangle_shift)
+    # rectangle_width = 0.3 # lateral view dimension
+    # rectangle_height = 0.52 # front view dimension
+    # rectangle_thickness = 0.3 # z dimension
+    # rectangle_shift = (0, 0, 0.55)
+    # rectangle_boundary_1 = create_rectangle_boundary(resolution,
+    #                                                rectangle_width,
+    #                                                rectangle_height,
+    #                                                rectangle_thickness,
+    #                                                rectangle_shift)
 
+
+    # rectangle_width = 0.4 # lateral view dimension
+    # rectangle_height = 0.45 # front view dimension
+    # rectangle_thickness = 0.3 # z dimension
+    # rectangle_shift = (0, 0, 0.1)
+    # rectangle_boundary_2 = create_rectangle_boundary(resolution,
+    #                                                rectangle_width,
+    #                                                rectangle_height,
+    #                                                rectangle_thickness,
+    #                                                rectangle_shift)
 
     ball_radius = 0.3
-    ball_center_shift = (0, 0, 0.27)
+    ball_center_shift = (0, 0, 0)
     ball_boundary = create_sphere_boundary(resolution, ball_radius, ball_center_shift)
 
 
 
-    rectangle_width = 0.7 # lateral view dimension
+    rectangle_width = 0.8 # lateral view dimension
     rectangle_height = 0.45 # front view dimension
     rectangle_thickness = 0.75 # z dimension
-    rectangle_shift = (-0.2, 0, -0)
+    rectangle_shift = (-0.2, 0, -0.2)
     rectangle_boundary_3 = create_rectangle_boundary(resolution,
                                                     rectangle_width,
                                                     rectangle_height,
                                                     rectangle_thickness,
                                                     rectangle_shift)
+    
+
 
     # combined_head_boundary = add_boundary([ball_boundary, rectangle_boundary_1])
     # combined_boundary = combine_boundary([ball_boundary,
@@ -250,11 +272,16 @@ if __name__ == "__main__":
     combined_boundary = combine_boundary([ball_boundary,
                                         rectangle_boundary_3],
                                         include_all=True,
-                                        use_subtraction=True,
+                                        use_subtraction=False,
                                         igore_idx=[False, False, False])
+    
+    
+    # boundary_intersection = create_intersection([rectangle_boundary_2, rectangle_boundary_3])
 
     print(combined_boundary.shape)
-    np.save(os.path.join(save_dir, "lion_sheep.npy"), combined_boundary)
+    # print(boundary_intersection.shape)
+    np.save(os.path.join(save_dir, "lion_sheep_ball_merge.npy"), combined_boundary)
+    # np.save(os.path.join(save_dir, "lion_sheep_intersection.npy"), boundary_intersection)
 
 
 
