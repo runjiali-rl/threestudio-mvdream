@@ -499,7 +499,7 @@ class MultiviewGeometryDiffusionGuidance(BaseObject):
         self.max_step = int(self.num_train_timesteps * max_step_percent)
 
 
-@threestudio.register("mvdream-multiview-dynamic-geometry-diffusion-guidance")
+@threestudio.register("mvdream-multiview-gaussian-geometry-diffusion-guidance")
 class MultiviewDynamicGeometryDiffusionGuidance(BaseObject):
     @dataclass
     class Config(BaseObject.Config):
@@ -584,15 +584,15 @@ class MultiviewDynamicGeometryDiffusionGuidance(BaseObject):
         timestep=None,
         text_embeddings=None,
         input_is_latent=False,
-        is_global_step=False,
+        weight_filters=None,
         ignore_points=None,
         **kwargs,
     ):
         batch_size = rgb.shape[0]
-        handle = None
         camera = c2w
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
+
         # apply gaussian hook to rgb_BCHW
         def gaussian_filter(H, W, std_dev):
             # Generate a grid of (x, y) coordinates
@@ -610,6 +610,19 @@ class MultiviewDynamicGeometryDiffusionGuidance(BaseObject):
             gauss *= W * H
             
             return gauss
+        
+        def hook(grad):
+            gaussian_heat_map = gaussian_filter(rgb_BCHW.shape[2],
+                                                rgb_BCHW.shape[3],
+                                                rgb_BCHW.shape[2] / 4).to(rgb_BCHW.device)
+            grad = grad * gaussian_heat_map
+            del gaussian_heat_map
+            return grad
+        # if the weight_filters is None we apply the weighting on the backpropagation graident
+        if weight_filters is None:
+            handle = rgb_BCHW.register_hook(hook)
+        else:
+            handle = None
         
       
         if text_embeddings is None:
@@ -711,29 +724,18 @@ class MultiviewDynamicGeometryDiffusionGuidance(BaseObject):
                     + (1 - self.cfg.recon_std_rescale) * latents_recon
                 )
 
-            #     x_0 = self.model.decode_first_stage(latents_recon)
-            #     x_sample = torch.clamp((x_0 + 1.0) / 2.0, min=0.0, max=1.0)
-            #     x_sample = 255. * x_sample.permute(0,2,3,1).cpu().numpy()
 
-            #     # Save image
-            #     x_sample_save = x_sample[0]
-            #     x_sample_save = x_sample_save.astype(np.uint8)
-            #     x_sample_save = cv2.cvtColor(x_sample_save, cv2.COLOR_RGB2BGR)
-            #     cv2.imwrite('x_sample.png', x_sample_save)
-
-            #     stop = 1
-            # rgb_BCHW = rgb_BCHW * 2.0 - 1.0
-            # rgb_BCHW = F.interpolate(
-            #     rgb_BCHW, (x_0.shape[2], x_0.shape[3]), mode="bilinear", align_corners=False
-            # )
-            # loss = (
-            #     0.5
-            #     * F.mse_loss(rgb_BCHW, x_0, reduction="sum")
-            #     / latents.shape[0]
-            # )
-
-            # grad = torch.autograd.grad(loss, rgb_BCHW, retain_graph=True)[0]
-            # x0-reconstruction loss from Sec 3.2 and Appendix
+                if weight_filters is not None:
+                    if weight_filters.shape[-1] != latents_recon.shape[-1]:
+                        weight_filters = F.interpolate(
+                            weight_filters,
+                            size=(latents_recon.shape[-2], latents_recon.shape[-1]),
+                            mode="bilinear",
+                            align_corners=False,
+                        ).squeeze(1)
+                    
+                    latents_recon = latents_recon * weight_filters
+                    latents = latents * weight_filters
 
             loss = (
                 0.5

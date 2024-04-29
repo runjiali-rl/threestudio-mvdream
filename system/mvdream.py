@@ -11,7 +11,9 @@ import numpy as np
 from PIL import Image
 import torch.nn.functional as F
 from threestudio.utils.base import update_end_if_possible
+import cv2
 
+torch.set_float32_matmul_precision('medium')
 
 
 def smooth_loss(inputs):
@@ -64,7 +66,11 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         self.weight_field_mean = []
         self.weight_field_var = []
         num_of_bound = self.bound.shape[0]
+        self.global_mean_shift = 0
+        # set up the gaussian bounded renderer
         for idx in range(num_of_bound):
+   
+            
             bound = self.bound[idx]
             # get the indices of the bounding box
             i_indices, j_indices, k_indices = torch.nonzero(bound.float(), as_tuple=True)
@@ -72,15 +78,27 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             # get the mean of the bounding box
             mean = torch.tensor([i_indices.float().mean(), j_indices.float().mean(), k_indices.float().mean()])
             mean = (mean-resolution//2)/resolution
+            if idx == num_of_bound - 1:
+                self.global_mean_shift = mean
+                break
             self.weight_field_mean.append(mean)
             height, width, depth = i_indices.max()-i_indices.min(), j_indices.max()-j_indices.min(), k_indices.max()-k_indices.min()
-            var = torch.tensor([height, width, depth])/resolution * 0.04
+            var = torch.tensor([height, width, depth])/resolution
             self.weight_field_var.append(var)
-        # convert mean and variance to leanernable parameter
+
+            # convert mean and variance to leanernable parameter
         self.weight_field_mean = torch.stack(self.weight_field_mean)
         self.weight_field_var = torch.stack(self.weight_field_var)
         self.weight_field_mean = torch.nn.Parameter(self.weight_field_mean, requires_grad=True)
         self.weight_field_var = torch.nn.Parameter(self.weight_field_var, requires_grad=False)
+
+        # create the optimizer for the mean and variance
+        self.optimizer = torch.optim.Adam([self.weight_field_mean], lr=1e-5)
+
+        # set up the weighting field function
+
+
+        
         # set up sds guidance models
         if self.cfg.use_geometry_sds:
             self.guidance = threestudio.find(self.cfg.geometry_guidance_type)(self.cfg.guidance)
@@ -121,53 +139,116 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         self.loss_weight = self.cfg.loss_weight
 
 
+    def render_gaussian(self,
+                        batch: Dict[str, Any],
+                        means: torch.Tensor, # N, 3 
+                        vars: torch.Tensor, # N, 3
+                        ) -> Dict[str, Any]:
+        
+        c2w = batch["c2w"] # B, 4, 4
+        fovy = batch["fovy"] # B
+        H, W = batch["height"], batch["width"] # B
+        focal_length: Float[Tensor, "B"] = 0.5 * H / torch.tan(0.5 * fovy)
+
+        w2c: Float[Tensor, "B 4 4"] = torch.zeros(c2w.shape[0], 4, 4).to(c2w)
+        w2c[:, :3, :3] = c2w[:, :3, :3].permute(0, 2, 1)
+        w2c[:, :3, 3:] = -c2w[:, :3, :3].permute(0, 2, 1) @ c2w[:, :3, 3:]
+        w2c[:, 3, 3] = 1.0
+        # get the mean position in the camera coordinate
+        means = means - self.global_mean_shift.to(means.device).unsqueeze(0)
+        means = torch.cat([means, torch.tensor([1.0]).to(means.device).unsqueeze(0).repeat(means.shape[0], 1)], dim=-1) # N, 4
+   
+        camera_means = []
+        for mean in means:
+            mean = mean.unsqueeze(0).repeat(w2c.shape[0], 1) # B, 4
+            camera_mean = torch.bmm(w2c, mean.unsqueeze(-1)).squeeze(-1)
+            camera_means.append(camera_mean)
+        camera_means = torch.stack(camera_means) # N, B, 4
+
+        # render mean position on the image
+        camera_means = camera_means[:, :, :3] # N, B, 3
+
+        projected_means = camera_means[:, :, :2] / camera_means[:, :, 2].unsqueeze(-1) # N, B, 2
+        projected_means[:, :, 0] = projected_means[:, :, 0] * -1
+        projected_means = focal_length.unsqueeze(-1) * projected_means + torch.tensor([W//2, H//2]).to(projected_means.device).unsqueeze(0)
+        projected_means = torch.round(projected_means) # N, B, 2
+
+        projected_vars = vars[:, None, :] / torch.abs(camera_means[:, :, 2]).unsqueeze(-1) # N, 1, 3 / N, B, 3 --> N, B, 3
+        projected_vars = projected_vars * torch.sqrt(torch.tensor(W**2 + H**2)).to(projected_vars.device)
+
+
+        return projected_means, projected_vars
+        
+
+
     def forward(self, batch: Dict[str, Any],
-                gaussian_mean: torch.Tensor = None,
-                gaussian_var: torch.Tensor = None,
                 bg_color: torch.Tensor = None,
                 bound: torch.Tensor = None) -> Dict[str, Any]:
-        if self.cfg.renderer_type == "nerf-gaussian-volume-bounded-renderer":
-            if bg_color is None:
-                return self.renderer(**batch,
-                                    gaussian_mean=gaussian_mean,
-                                    gaussian_var=gaussian_var)
+      
+
+        if bg_color is None:
             return self.renderer(**batch,
-                                gaussian_mean=gaussian_mean,
-                                gaussian_var=gaussian_var,
-                                bg_color=bg_color)
-        elif self.cfg.renderer_type == "nerf-multi-volume-bounded-renderer":
-            if bg_color is None:
-                return self.renderer(**batch,
-                                    bound=bound)
-            return self.renderer(**batch,
-                                bound=bound,
-                                bg_color=bg_color)
+                                bound=bound)
+        return self.renderer(**batch,
+                            bound=bound,
+                            bg_color=bg_color)
 
     def training_step(self, batch, batch_idx):
         if self.use_iterative:
-            if self.cfg.renderer_type == "nerf-gaussian-volume-bounded-renderer":
-                iter_idx = batch_idx%len(self.weight_field_mean)
-                if not iter_idx == len(self.weight_field_mean) - 1:
-                    # only learn the layout for the global step
-                    weight_mean_list = [self.weight_field_mean[iter_idx].detach()]
-                    weight_var_list = [self.weight_field_var[iter_idx].detach()]
-                else:
-                    weight_mean_list = [self.weight_field_mean[iter_idx]]
-                    weight_var_list = [self.weight_field_var[iter_idx]]
-            elif self.cfg.renderer_type == "nerf-multi-volume-bounded-renderer":
-                iter_idx = batch_idx%len(self.bound)
-                bound_list = [self.bound[iter_idx]]
+            iter_idx = batch_idx%len(self.bound)
+            is_global_step = batch_idx%len(self.bound) == len(self.bound) - 1
+            bound_list = [self.bound[iter_idx]]
 
             loss_weight_list = [self.loss_weight[iter_idx]]
             prompt_utils_list = [self.prompt_utils_list[iter_idx]]
             if self.cfg.use_single_view:
                 single_view_prompt_utils_list = [self.single_view_prompt_utils_list[iter_idx]]
-        if self.cfg.renderer_type == "nerf-gaussian-volume-bounded-renderer":
-            out_list = [self(batch, gaussian_mean=weight_mean, gaussian_var=weight_var) \
-                        for weight_mean, weight_var in zip(weight_mean_list, weight_var_list)]
-        elif self.cfg.renderer_type == "nerf-multi-volume-bounded-renderer":
-            out_list = [self(batch, bound=bound) for bound in bound_list]
+        
+
+        if is_global_step:
+            projected_means, projected_vars = self.render_gaussian(batch,
+                                                                    self.weight_field_mean,
+                                                                    self.weight_field_var) # N, B, 2
+            def gaussian_filter(H, W, mean, var):
+                var = var * 2 #Hardcoded
+                x = torch.arange(0, W).to(mean)
+                y = torch.arange(0, H).to(mean)
+                x, y = torch.meshgrid(x, y)
+                x = x - mean[0]
+                y = y - mean[1]
+                weight = torch.exp(-((x**2)/(2*torch.max(var)**2) + (y**2)/(2*torch.max(var)**2)))
+                return weight
+            weight_filters = []
+            for idx, (projected_mean, projected_var) in enumerate(zip(projected_means, projected_vars)):
+                weight_filters_for_one_bound = []
+                for jdx, (mean, var) in enumerate(zip(projected_mean, projected_var)):
+                    weight = gaussian_filter(batch['height'], batch['width'], mean, var)
+                    weight_filters_for_one_bound.append(weight)
+                weight_filters_for_one_bound = torch.stack(weight_filters_for_one_bound) # B, H, W
+                weight_filters.append(weight_filters_for_one_bound)
+            weight_filters = torch.stack(weight_filters) # N, B, H, W
+            global_weight_filters = torch.sum(weight_filters, dim=0)/len(self.bound) # B, H, W
+
+        # conduct rendering for each bounding box ========================================
+        out_list = [self(batch, bound=bound) for bound in bound_list]
+
+
         if self.cfg.visualize:
+            if is_global_step:
+                for idx, (projected_mean, projected_var) in enumerate(zip(projected_means, projected_vars)):
+                    for jdx, (mean, var) in enumerate(zip(projected_mean, projected_var)):
+                        mean = mean.cpu().detach().numpy().astype(np.int32)
+                        var = var.cpu().detach().numpy().astype(np.int32)
+                        image = np.zeros((batch['height'], batch['width'], 3), dtype=np.uint8)
+                        image = cv2.circle(image, (mean[0], mean[1]), 5, (255, 0, 0), -1)
+                        image = cv2.ellipse(image, (mean[0], mean[1]), (var[0], var[1]), 0, 0, 360, (0, 255, 0), 2)
+                        cv2.imwrite(f"gaussian_{idx}_{jdx}.png", image)
+                        weight_filter = weight_filters[idx, jdx].cpu().detach().numpy()
+                        cv2.imwrite(f"weight_filter_{idx}_{jdx}.png", weight_filter*255)
+
+                for jdx, weight_filter in enumerate(global_weight_filters):
+                    cv2.imwrite(f"global_weight_filter_{jdx}.png", weight_filter.cpu().detach().numpy()*255)
+
             for idx, out in enumerate(out_list):
                 rendered_images = out["comp_rgb"]
                 rendered_images_to_save = [Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))\
@@ -176,10 +257,8 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                 for jdx, rendered_image_to_save in enumerate(rendered_images_to_save):
                     rendered_image_to_save.save(f"rendered_images_{idx}_{jdx}.png")
         
-        stop = 1
-        # crop image legacy code
 
-        # shift the image to the center
+        # conduct the 2d recentering ========================================
         if self.cfg.use_2d_recentering:
             for idx, out in enumerate(out_list):
                 rendered_images = out["comp_rgb"]
@@ -203,7 +282,11 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                 x_max = min(x_max, image_w)
 
                 cropped_images = []
-                for jdx, rendered_image_to_save in enumerate(rendered_images):
+                if is_global_step:
+                    cropped_weight_filters = []
+                for jdx, rendered_image in enumerate(rendered_images):
+                    if is_global_step:
+                        global_weight_filter = global_weight_filters[jdx]
                     single_view_opacity_mask = opacity_mask[jdx, :, :, 0]
                     opacity_i, opacity_j = torch.nonzero(single_view_opacity_mask, as_tuple=True)
                     if len(opacity_i) != 0:
@@ -218,38 +301,54 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                         single_view_min_x, single_view_max_x = image_h-x_max, image_h-x_min
                         single_view_min_y, single_view_max_y = image_h-z_max, image_h-z_min
 
-                    cropped_rendered_image_to_save = \
-                        rendered_image_to_save[single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
-                    h, w = cropped_rendered_image_to_save.shape[0], cropped_rendered_image_to_save.shape[1]
+                    cropped_rendered_image = \
+                        rendered_image[single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
+          
+                    h, w = cropped_rendered_image.shape[0], cropped_rendered_image.shape[1]
+                    if is_global_step:
+                        global_weight_filter = global_weight_filter[single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
                     if h==0 or w==0:
-                        cropped_rendered_image_to_save = rendered_image_to_save[image_h-z_max:image_h-z_min, image_h-x_max:image_h-x_min]
-                    rendered_image_to_save = F.interpolate(cropped_rendered_image_to_save.permute(2, 0, 1).unsqueeze(0),
+                        cropped_rendered_image = rendered_image_to_save[image_h-z_max:image_h-z_min, image_h-x_max:image_h-x_min]
+                        if is_global_step:
+                            global_weight_filter = global_weight_filter[image_h-z_max:image_h-z_min, image_h-x_max:image_h-x_min]
+          
+                    rendered_image = F.interpolate(cropped_rendered_image.permute(2, 0, 1).unsqueeze(0),
                                                         (image_h, image_w),
                                                         mode='bilinear',
                                                         align_corners=True)
-                    cropped_images.append(rendered_image_to_save.squeeze(0).permute(1, 2, 0))
 
-                    # rendered_image_to_save = cropped_images[-1].cpu().detach().numpy()
-                    # rendered_image_to_save = Image.fromarray((rendered_image_to_save * 255).astype(np.uint8))
-                    # rendered_image_to_save.save(f"rendered_images_{idx}_{jdx}.png")   
-                #covert list to tensor
+                    cropped_images.append(rendered_image.squeeze(0).permute(1, 2, 0))
+                    if is_global_step:
+                        global_weight_filter = F.interpolate(global_weight_filter.unsqueeze(0).unsqueeze(0),
+                                    (image_h, image_w),
+                                    mode='bilinear',
+                                    align_corners=True)
+                        cropped_weight_filters.append(global_weight_filter.squeeze(0).squeeze(0))
+
+                if is_global_step:
+                    cropped_weight_filters = torch.stack(cropped_weight_filters)[:, None, :, :] # B, 1, H, W
+                
                 cropped_images = torch.stack(cropped_images)
                 out_list[idx]["comp_rgb"] = cropped_images
         
 
-
-        guidance_out_list = [self.guidance(out["comp_rgb"], prompt_utils_list[idx], **batch) \
-                             for idx, out in enumerate(out_list)]
+        # iterate the guidance of each compositional part ========================================
+        if is_global_step:
+            guidance_out_list = [self.guidance(out["comp_rgb"],prompt_utils_list[idx], **batch, weight_filters=cropped_weight_filters) \
+                                for idx, out in enumerate(out_list)]
+        else:
+            guidance_out_list = [self.guidance(out["comp_rgb"],prompt_utils_list[idx], **batch) \
+                                for idx, out in enumerate(out_list)]
         if self.cfg.use_single_view:
             single_view_guidance_out_list = [self.single_view_guidance(out["comp_rgb"],single_view_prompt_utils_list[idx], **batch) \
                                             for idx, out in enumerate(out_list)]
         else:
             single_view_guidance_out_list = [{} for _ in range(len(out_list))]
 
+        # iterate the loss of each compositional part ========================================
         loss = 0.0
         subpart_idx = 0
         handle = None
-        # iterate the loss of each compositional part
         for out, guidance_out, single_view_guidance_out in zip(out_list, guidance_out_list, single_view_guidance_out_list):
             sub_loss = 0.0
             for name, value in guidance_out.items():
@@ -268,7 +367,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                         sub_loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])*5
 
             if self.C(self.cfg.loss.lambda_orient) > 0:
-                if (self.use_iterative and iter_idx == len(self.bound) - 1) or not self.use_iterative:
+                if (self.use_iterative and is_global_step) or not self.use_iterative:
                     if "normal" not in out:
                         raise ValueError(
                             "Normal is required for orientation loss, no normal is found in the output."
@@ -313,7 +412,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             loss += sub_loss * loss_weight_list[subpart_idx]
             subpart_idx += 1
 
-            if iter_idx == len(self.bound) - 1:
+            if is_global_step:
                 rgbs = out["comp_rgb_fg"]
                 rgb_smooth_loss = 0.0
                 depth_maps = out["depth"]
@@ -328,6 +427,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                 "handle": handle}
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
+        is_global_step = batch_idx%len(self.bound) == len(self.bound) - 1
         self.dataset = self.trainer.train_dataloader.dataset
         update_end_if_possible(
             self.dataset, self.true_current_epoch, self.true_global_step
@@ -335,13 +435,14 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         self.do_update_step_end(self.true_current_epoch, self.true_global_step)
         if outputs["handle"] is not None:
             outputs['handle'].remove()
+        if self.weight_field_mean.grad is not None and batch_idx > 2000 and is_global_step:
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            stop = 1
 
     def validation_step(self, batch, batch_idx):
         bg_color = torch.tensor([1.0, 1.0, 1.0]).to(self.device)
-        if self.cfg.renderer_type == "nerf-gaussian-volume-bounded-renderer":
-            out = self(batch, self.weight_field_mean[-1], self.weight_field_var[-1], bg_color=bg_color)
-        elif self.cfg.renderer_type == "nerf-multi-volume-bounded-renderer":
-            out = self(batch, bound=self.bound[-1], bg_color=bg_color)
+        out = self(batch, bound=self.bound[-1], bg_color=bg_color)
         self.save_image_grid(
             f"it{self.true_global_step}-{batch['index'][0]}.png",
             (
@@ -382,10 +483,7 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
 
     def test_step(self, batch, batch_idx):
         bg_color = torch.tensor([1.0, 1.0, 1.0]).to(self.device)
-        if self.cfg.renderer_type == "nerf-gaussian-volume-bounded-renderer":
-            out = self(batch, self.weight_field_mean[-1], self.weight_field_var[-1], bg_color=bg_color)
-        elif self.cfg.renderer_type == "nerf-multi-volume-bounded-renderer":
-            out = self(batch, bound=self.bound[-1], bg_color=bg_color)
+        out = self(batch, bound=self.bound[-1], bg_color=bg_color)
         self.save_image_grid(
             f"it{self.true_global_step}-test/{batch['index'][0]}.png",
             (

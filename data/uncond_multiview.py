@@ -503,6 +503,7 @@ class RandomConsecutiveMultiviewCameraIterableDataset(RandomCameraIterableDatase
             "height": self.height,
             "width": self.width,
             "fovy": fovy,
+            "lookat": lookat,
         }
 
 
@@ -583,7 +584,6 @@ class RandomConsecutiveMultiviewCameraDataModule(pl.LightningDataModule):
     def setup(self, stage=None) -> None:
         if stage in [None, "fit"]:
             self.train_dataset = RandomConsecutiveMultiviewCameraIterableDataset(self.cfg)
-            stop = 1
 
         if stage in [None, "fit", "validate"]:
             self.val_dataset = RandomCameraDataset(self.cfg, "val")
