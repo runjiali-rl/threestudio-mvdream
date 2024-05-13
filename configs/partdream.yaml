@@ -24,7 +24,7 @@ data:
   eval_fovy_deg: 40.
   n_times: 3
 
-system_type: "mvdream-system-multi-bounded"
+system_type: "partdream-system"
 system:
   geometry_type: "implicit-volume"
   geometry:
@@ -45,8 +45,8 @@ system:
       per_level_scale: 1.447269237440378 # max resolution 4096
 
 
-  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_new.npy"
-
+  # bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_new.npy"
+  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_ab.npy"
 
   material_type: "no-material"
   material:
@@ -81,7 +81,7 @@ system:
 
   guidance_type: "mvdream-multiview-diffusion-guidance"
   # geometry_guidance_type: "mvdream-multiview-dynamic-geometry-diffusion-guidance"
-  geometry_guidance_type: "mvdream-multiview-gaussian-geometry-diffusion-guidance"
+  geometry_guidance_type: "partdream-guidance"
   guidance:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
@@ -106,7 +106,6 @@ system:
   use_single_view: False
   use_geometry_sds: True
   use_2d_recentering: True
-  use_iterative: True
   use_learnable_layout: True
   use_mutual_negative_prompt: False
   layout_regularization: [False, True, True]
@@ -114,11 +113,12 @@ system:
 
   visualize: True
   update_layout: True
-  layout_lr: 1e-5
+  layout_lr: 1e-4
+  alpha: 1e-2
 
   # gaussian_learn_start_step: 7000
-  layout_learn_start_step: 400
-  layout_learn_only_step: 1500
+  layout_learn_start_step: 100
+  # layout_learn_only_step: 1500
   layout_learn_stop_step: 6000
 
   gaussian_var_rescales: [4.5, 4.5]

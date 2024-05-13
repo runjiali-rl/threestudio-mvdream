@@ -3,15 +3,13 @@ tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
 
-data_type: "mvdream-consecutive-random-multiview-camera-datamodule"
+data_type: "mvdream-random-multiview-camera-datamodule"
 data:
-  # batch_size: [8,4]
-  batch_size: [4,4]
+  batch_size: [8,4]
   n_view: 4
   # 0-4999: 64x64, >=5000: 256x256
-
-  width: [96, 256]
-  height: [96, 256]
+  width: [64, 256]
+  height: [64, 256]
   resolution_milestones: [5000]
   camera_distance_range: [0.8, 1.0] # relative
   fovy_range: [15, 60]
@@ -22,14 +20,15 @@ data:
   n_val_views: 4
   eval_camera_distance: 3.0
   eval_fovy_deg: 40.
-  n_times: 3
 
-system_type: "mvdream-system-multi-bounded"
+
+
+system_type: "mvdream-deepfloyd-system"
 system:
   geometry_type: "implicit-volume"
   geometry:
     radius: 1.0
-    normal_type: "analytic"
+    normal_type: null
 
     density_bias: "blob_magic3d"
     density_activation: softplus
@@ -44,15 +43,10 @@ system:
       base_resolution: 16
       per_level_scale: 1.447269237440378 # max resolution 4096
 
-
-  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_new.npy"
-
-
   material_type: "no-material"
   material:
     n_output_dims: 3
     color_activation: sigmoid
-    requires_normal: True
 
   background_type: "mvdream-neural-environment-map-background"
   background:
@@ -60,28 +54,20 @@ system:
     random_aug: true
     share_aug_bg: true
 
-  # renderer_type: "nerf-gaussian-volume-bounded-renderer"
-  renderer_type: "nerf-multi-volume-bounded-renderer"
+  renderer_type: "nerf-volume-renderer"
   renderer:
     radius: ${system.geometry.radius}
-    # num_samples_per_ray: 512
     num_samples_per_ray: 128
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
-
-  prompt_list: ['a lion head', 'a sheep body, no head', a lion head connected to a sheep body smoothly']
-  loss_weight: [1.8, 1, 2]
-
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
     prompt: ???
-    negative_prompt: "hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon"
+    negative_prompt: "ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions"
     front_threshold: 30.
     back_threshold: 30.
 
   guidance_type: "mvdream-multiview-diffusion-guidance"
-  # geometry_guidance_type: "mvdream-multiview-dynamic-geometry-diffusion-guidance"
-  geometry_guidance_type: "mvdream-multiview-gaussian-geometry-diffusion-guidance"
   guidance:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
@@ -90,38 +76,6 @@ system:
     max_step_percent: [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
-
-  
-  # use_single_view: False
-  # use_geometry_sds: True
-  # use_2d_recentering: True
-  # use_iterative: True
-  # use_learnable_gaussian: True
-  # use_mutual_negative_prompt: False
-  # visualize: True
-  # update_layout: True
-  # layout_lr: 1e-5
-
-
-  use_single_view: False
-  use_geometry_sds: True
-  use_2d_recentering: True
-  use_iterative: True
-  use_learnable_layout: True
-  use_mutual_negative_prompt: False
-  layout_regularization: [False, True, True]
-  layout_regularization_lambda: [0.0000001, 1000000000, 1]
-
-  visualize: True
-  update_layout: True
-  layout_lr: 1e-5
-
-  # gaussian_learn_start_step: 7000
-  layout_learn_start_step: 400
-  layout_learn_only_step: 1500
-  layout_learn_stop_step: 6000
-
-  gaussian_var_rescales: [4.5, 4.5]
 
   single_view_prompt_processor_type: "deep-floyd-prompt-processor"
   single_view_prompt_processor:
@@ -134,6 +88,9 @@ system:
     enable_memory_efficient_attention: True
     enable_sequential_cpu_offload: True
 
+
+  guidance_weight: [0.06, 0.4]
+
   loggers:
     wandb:
       enable: false
@@ -141,11 +98,10 @@ system:
 
   loss:
     lambda_sds: 1.
-    lambda_orient: 1000
-    lambda_sparsity: 0
+    lambda_orient: 0.
+    lambda_sparsity: 0.
     lambda_opaque: 0.
-    lambda_z_variance: 10
-    
+    lambda_z_variance: 0.
   optimizer:
     name: AdamW
     args:
@@ -162,12 +118,12 @@ system:
         lr: 0.001
 
 trainer:
-  max_steps: 9000
+  max_steps: 10000
   log_every_n_steps: 1
   num_sanity_val_steps: 0
   val_check_interval: 200
   enable_progress_bar: true
-  precision: '16'
+  precision: 16-mixed
 
 checkpoint:
   save_last: true

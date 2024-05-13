@@ -22,7 +22,7 @@ data:
   n_val_views: 4
   eval_camera_distance: 3.0
   eval_fovy_deg: 40.
-  n_times: 3
+  n_times: 4
 
 system_type: "mvdream-system-multi-bounded"
 system:
@@ -45,7 +45,7 @@ system:
       per_level_scale: 1.447269237440378 # max resolution 4096
 
 
-  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_new.npy"
+  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_fish.npy"
 
 
   material_type: "no-material"
@@ -69,8 +69,8 @@ system:
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
 
-  prompt_list: ['a lion head', 'a sheep body, no head', a lion head connected to a sheep body smoothly']
-  loss_weight: [1.8, 1, 2]
+  prompt_list: ['a lion head', 'a sheep body, no head', "a fish tail", "a lion head connected to a sheep body with a fish tail smoothly"]
+  loss_weight: [1.8, 1, 1.8, 2]
 
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
@@ -107,13 +107,17 @@ system:
   use_geometry_sds: True
   use_2d_recentering: True
   use_iterative: True
-  use_learnable_layout: True
+
+  # layout learning 
+  use_learnable_layout: False
+  update_layout: False
+
   use_mutual_negative_prompt: False
   layout_regularization: [False, True, True]
   layout_regularization_lambda: [0.0000001, 1000000000, 1]
 
   visualize: True
-  update_layout: True
+
   layout_lr: 1e-5
 
   # gaussian_learn_start_step: 7000
@@ -121,7 +125,7 @@ system:
   layout_learn_only_step: 1500
   layout_learn_stop_step: 6000
 
-  gaussian_var_rescales: [4.5, 4.5]
+  gaussian_var_rescales: [4.5, 4.5, 4.5]
 
   single_view_prompt_processor_type: "deep-floyd-prompt-processor"
   single_view_prompt_processor:

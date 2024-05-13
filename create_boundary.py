@@ -2,7 +2,7 @@ import numpy as np
 import os
 from typing import Tuple
 from copy import deepcopy
-import cv2
+import math
 
 
 
@@ -25,9 +25,9 @@ def create_rectangle_boundary(resolution: int,
             "Boundary thickness is too large for the given center"
 
     boundary_array = np.zeros((resolution, resolution, resolution), dtype=np.float32) 
-    boundary_array[int(resolution//2 - boundary_width/2 * resolution//2):int(resolution//2 + boundary_width/2 * resolution//2),  
-                   int(resolution//2 - boundary_height/2 * resolution//2):int(resolution//2 + boundary_height/2 * resolution//2),
-                   int(resolution//2 - boundary_thickness/2 * resolution//2):int(resolution//2 + boundary_thickness/2 * resolution//2)] = 1
+    boundary_array[math.floor(resolution/2 - boundary_width/2 * (resolution/2)):math.ceil(resolution//2 + boundary_width/2 * (resolution/2)),  
+                   math.floor(resolution/2 - boundary_height/2 * (resolution/2)):math.ceil(resolution//2 + 1 + boundary_height/2 * (resolution/2)),
+                   math.floor(resolution/2 - boundary_thickness/2 * (resolution/2)):math.ceil(resolution//2 + 1 + boundary_thickness/2 * (resolution//2))] = 1
 
     
 
@@ -222,29 +222,10 @@ if __name__ == "__main__":
     save_dir = "custom/threestudio-mvdream/bounds"
     resolution = 512
 
-    # rectangle_width = 0.3 # lateral view dimension
-    # rectangle_height = 0.52 # front view dimension
-    # rectangle_thickness = 0.3 # z dimension
-    # rectangle_shift = (0, 0, 0.55)
-    # rectangle_boundary_1 = create_rectangle_boundary(resolution,
-    #                                                rectangle_width,
-    #                                                rectangle_height,
-    #                                                rectangle_thickness,
-    #                                                rectangle_shift)
-
-
-    # rectangle_width = 0.4 # lateral view dimension
-    # rectangle_height = 0.45 # front view dimension
-    # rectangle_thickness = 0.3 # z dimension
-    # rectangle_shift = (0, 0, 0.1)
-    # rectangle_boundary_2 = create_rectangle_boundary(resolution,
-    #                                                rectangle_width,
-    #                                                rectangle_height,
-    #                                                rectangle_thickness,
-    #                                                rectangle_shift)
 
     ball_radius = 0.3
-    ball_center_shift = (0, 0, 0)
+    # ball_center_shift = (0.08, 0, 0)
+    ball_center_shift = (0.5, 0, 0)
     ball_boundary = create_sphere_boundary(resolution, ball_radius, ball_center_shift)
 
 
@@ -252,13 +233,25 @@ if __name__ == "__main__":
     rectangle_width = 0.8 # lateral view dimension
     rectangle_height = 0.45 # front view dimension
     rectangle_thickness = 0.75 # z dimension
-    rectangle_shift = (-0.2, 0, -0.2)
+    rectangle_shift = (0.2, 0, -0.15)
     rectangle_boundary_3 = create_rectangle_boundary(resolution,
                                                     rectangle_width,
                                                     rectangle_height,
                                                     rectangle_thickness,
                                                     rectangle_shift)
     
+    rectangle_width = 0.6
+    rectangle_height = 0.3
+    rectangle_thickness = 0.4
+    rectangle_shift = (-0.4, 0, 0)
+
+    rectangle_boundary_tail = create_rectangle_boundary(resolution,
+                                                    rectangle_width,
+                                                    rectangle_height,
+                                                    rectangle_thickness,
+                                                    rectangle_shift)
+    
+
 
 
     # combined_head_boundary = add_boundary([ball_boundary, rectangle_boundary_1])
@@ -269,8 +262,7 @@ if __name__ == "__main__":
     #                                      use_subtraction=True,
     #                                      igore_idx=[False, False, False])
 
-    combined_boundary = combine_boundary([ball_boundary,
-                                        rectangle_boundary_3],
+    combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3, rectangle_boundary_tail],
                                         include_all=True,
                                         use_subtraction=False,
                                         igore_idx=[False, False, False])
@@ -279,8 +271,16 @@ if __name__ == "__main__":
     # boundary_intersection = create_intersection([rectangle_boundary_2, rectangle_boundary_3])
 
     print(combined_boundary.shape)
-    # print(boundary_intersection.shape)
-    np.save(os.path.join(save_dir, "lion_sheep_ball_merge.npy"), combined_boundary)
+    for i in range(combined_boundary.shape[0]):
+        # print the center of the boundary
+        i_index, j_index, k_index = np.where(combined_boundary[i] != 0)
+        mean_i = np.mean(i_index)/resolution - 0.5
+        mean_j = np.mean(j_index)/resolution - 0.5
+        mean_k = np.mean(k_index)/resolution - 0.5
+
+        print(f"Boundary {i} center: ({mean_i}, {mean_j}, {mean_k})")
+        
+    np.save(os.path.join(save_dir, "lion_sheep_fish.npy"), combined_boundary)
     # np.save(os.path.join(save_dir, "lion_sheep_intersection.npy"), boundary_intersection)
 
 

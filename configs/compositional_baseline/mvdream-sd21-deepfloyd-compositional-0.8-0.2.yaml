@@ -69,13 +69,13 @@ system:
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
 
-  prompt_list: ['a lion head', 'a sheep body, no head', a lion head connected to a sheep body smoothly']
-  loss_weight: [1.8, 1, 2]
+  prompt_list: ['a lion head', 'a sheep body, no head', a photo of a Lion with a sheep body']
+  loss_weight: [1.8, 1, 3]
 
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
     prompt: ???
-    negative_prompt: "hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon"
+    negative_prompt: "rainbow, hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon"
     front_threshold: 30.
     back_threshold: 30.
 
@@ -92,37 +92,27 @@ system:
     recon_std_rescale: 0.5
 
   
-  # use_single_view: False
-  # use_geometry_sds: True
-  # use_2d_recentering: True
-  # use_iterative: True
-  # use_learnable_gaussian: True
-  # use_mutual_negative_prompt: False
-  # visualize: True
-  # update_layout: True
-  # layout_lr: 1e-5
-
-
-  use_single_view: False
-  use_geometry_sds: True
-  use_2d_recentering: True
+  use_single_view: True
+  use_geometry_sds: False
+  use_2d_recentering: False
   use_iterative: True
-  use_learnable_layout: True
+  use_learnable_layout: False
   use_mutual_negative_prompt: False
   layout_regularization: [False, True, True]
   layout_regularization_lambda: [0.0000001, 1000000000, 1]
 
-  visualize: True
-  update_layout: True
-  layout_lr: 1e-5
+  visualize: False
+  update_layout: False
+  layout_lr: 1e-4
 
   # gaussian_learn_start_step: 7000
   layout_learn_start_step: 400
   layout_learn_only_step: 1500
   layout_learn_stop_step: 6000
 
-  gaussian_var_rescales: [4.5, 4.5]
+  gaussian_var_rescales: [4.5, 5]
 
+  guidance_weight: [0.8, 2]
   single_view_prompt_processor_type: "deep-floyd-prompt-processor"
   single_view_prompt_processor:
     prompt: ???
