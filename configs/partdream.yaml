@@ -46,7 +46,8 @@ system:
 
 
   # bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_new.npy"
-  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_ab.npy"
+  # bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_ab.npy"
+  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep.npy"
 
   material_type: "no-material"
   material:

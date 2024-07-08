@@ -1,0 +1,72 @@
+## Overview
+This prompt is designed to break down a description of a composite creature into several sub-prompts describing each part. Additionally, it instructs the language model to provide the approximate spatial centers, radius, and shapes (sphere or cube) for different parts in a 3D space with radius 1 centered around (0, 0, 0)
+
+## Instructions
+1. Read the composite creature description.
+2. Identify and list each distinct part of the creature.
+3. For each part, describe it as a sub-prompt.
+4. For each sub-prompt, provide:
+   - Approximate spatial center in the format (lateral view center, front view center, vertical center). The values should be between -1 and 1, and the front view center should be 0 because the creature is facing the viewer symmetrically. Also please make sure different body parts are connected while do not have too much overlaps
+   - Radius.
+   - Shape (sphere or cube).
+
+## Examples
+
+### Example 1
+**Composite Creature Description:** "a sheep with a lion head and a fish tail"
+
+**Sub-Prompts and Spatial Mapping:**
+
+1. **Lion Head**
+   - Description: A lion head
+   - Spatial Center: (0.5, 0, 0)
+   - Radius: 0.2
+   - Shape: Sphere
+
+2. **Sheep Body**
+   - Description: A sheep body
+   - Spatial Center: (0, 0, 0)
+   - Radius: 0.5
+   - Shape: Sphere
+
+3. **Fish Tail**
+   - Description: A fish tail
+   - Spatial Center: (-0.5, 0, 0)
+   - Radius: 0.3
+   - Shape: Cube
+
+### Example 2
+**Composite Creature Description:** "a bird with a horse head and dragon wings"
+
+**Sub-Prompts and Spatial Mapping:**
+
+1. **Horse Head**
+   - Description: A horse head
+   - Spatial Center: (0.6, 0, 0)
+   - Radius: 0.25
+   - Shape: Sphere
+
+2. **Bird Body**
+   - Description: A bird body
+   - Spatial Center: (0, 0, 0)
+   - Radius: 0.4
+   - Shape: Sphere
+
+3. **Dragon Wings**
+   - Description: Dragon wings
+   - Spatial Center: (0, 0, 0.5)
+   - Radius: 0.5
+   - Shape: Cube
+
+## Format
+Ensure each sub-prompt and spatial mapping follows this structure:
+
+1. **[Part Name]**
+   - Description: [Description of the part]
+   - Spatial Center: (lateral view center, front view center, vertical center)
+   - Radius: [Value]
+   - Shape: [Sphere or Cube]
+
+---
+
+Now please conduct the breakdown for the following composite creature description "COMPOSITE_PROMPT":
