@@ -240,16 +240,16 @@ if __name__ == "__main__":
                                                     rectangle_thickness,
                                                     rectangle_shift)
     
-    rectangle_width = 0.6
-    rectangle_height = 0.3
-    rectangle_thickness = 0.4
-    rectangle_shift = (-0.4, 0, 0)
+    # rectangle_width = 0.6
+    # rectangle_height = 0.3
+    # rectangle_thickness = 0.4
+    # rectangle_shift = (-0.4, 0, 0)
 
-    rectangle_boundary_tail = create_rectangle_boundary(resolution,
-                                                    rectangle_width,
-                                                    rectangle_height,
-                                                    rectangle_thickness,
-                                                    rectangle_shift)
+    # rectangle_boundary_tail = create_rectangle_boundary(resolution,
+    #                                                 rectangle_width,
+    #                                                 rectangle_height,
+    #                                                 rectangle_thickness,
+    #                                                 rectangle_shift)
     
 
 
@@ -262,10 +262,10 @@ if __name__ == "__main__":
     #                                      use_subtraction=True,
     #                                      igore_idx=[False, False, False])
 
-    combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3, rectangle_boundary_tail],
+    combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3],
                                         include_all=True,
                                         use_subtraction=False,
-                                        igore_idx=[False, False, False])
+                                        igore_idx=[False, False])
     
     
     # boundary_intersection = create_intersection([rectangle_boundary_2, rectangle_boundary_3])
@@ -280,7 +280,7 @@ if __name__ == "__main__":
 
         print(f"Boundary {i} center: ({mean_i}, {mean_j}, {mean_k})")
         
-    np.save(os.path.join(save_dir, "lion_sheep_fish.npy"), combined_boundary)
+    np.save(os.path.join(save_dir, "lion_sheep.npy"), combined_boundary)
     # np.save(os.path.join(save_dir, "lion_sheep_intersection.npy"), boundary_intersection)
 
 

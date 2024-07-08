@@ -12,6 +12,7 @@ from PIL import Image
 import torch.nn.functional as F
 from threestudio.utils.base import update_end_if_possible
 import cv2
+from .mllm_optimizer import run_model_optimization
 
 torch.set_float32_matmul_precision('medium')
 torch.random.manual_seed(0)
@@ -38,13 +39,13 @@ class PartDreamSystem(BaseLift3DSystem):
         loss_weight: List[float] = None
         use_2d_recentering: bool = False
 
-        use_single_view: bool = False
+        use_part_expert: bool = False
 
-        single_view_guidance_type: str = ""
-        single_view_guidance: dict = field(default_factory=dict)
+        part_expert_guidance_type: str = ""
+        part_expert_guidance: dict = field(default_factory=dict)
 
-        single_view_prompt_processor_type: str = ""
-        single_view_prompt_processor: dict = field(default_factory=dict)
+        part_expert_prompt_processor_type: str = ""
+        part_expert_prompt_processor: dict = field(default_factory=dict)
 
         use_geometry_sds: bool = False
         geometry_guidance_type: str = ""
@@ -144,21 +145,21 @@ class PartDreamSystem(BaseLift3DSystem):
             prompt_processor = prompt_processor()
             self.prompt_utils_list.append(prompt_processor)
 
-        if self.cfg.use_single_view:
-            self.single_view_guidance = threestudio.find(self.cfg.single_view_guidance_type)(self.cfg.single_view_guidance)
+        if self.cfg.use_part_expert:
+            self.part_expert_guidance = threestudio.find(self.cfg.part_expert_guidance_type)(self.cfg.part_expert_guidance)
 
             # initialize the single view prompt_processor
-            self.single_view_prompt_processor_list = []
+            self.part_expert_prompt_processor_list = []
             for prompt in self.cfg.prompt_list:
-                self.cfg.single_view_prompt_processor.prompt=prompt
-                self.single_view_prompt_processor = threestudio.find(self.cfg.single_view_prompt_processor_type)(
-                    self.cfg.single_view_prompt_processor
+                self.cfg.part_expert_prompt_processor.prompt=prompt
+                self.part_expert_prompt_processor = threestudio.find(self.cfg.part_expert_prompt_processor_type)(
+                    self.cfg.part_expert_prompt_processor
                 )
-                self.single_view_prompt_processor_list.append(self.single_view_prompt_processor)
-            self.single_view_prompt_utils_list = []
-            for single_view_prompt_processor in self.single_view_prompt_processor_list:
-                single_view_prompt_processor = single_view_prompt_processor()
-                self.single_view_prompt_utils_list.append(single_view_prompt_processor)
+                self.part_expert_prompt_processor_list.append(self.part_expert_prompt_processor)
+            self.part_expert_prompt_utils_list = []
+            for part_expert_prompt_processor in self.part_expert_prompt_processor_list:
+                part_expert_prompt_processor = part_expert_prompt_processor()
+                self.part_expert_prompt_utils_list.append(part_expert_prompt_processor)
             
         # initialize the loss weight
         self.loss_weight = self.cfg.loss_weight
@@ -237,8 +238,8 @@ class PartDreamSystem(BaseLift3DSystem):
         bound_list = [self.bound[iter_idx]]
         loss_weight_list = [self.loss_weight[iter_idx]]
         prompt_utils_list = [self.prompt_utils_list[iter_idx]]
-        if self.cfg.use_single_view:
-            single_view_prompt_utils_list = [self.single_view_prompt_utils_list[iter_idx]]
+        if self.cfg.use_part_expert:
+            part_expert_prompt_utils_list = [self.part_expert_prompt_utils_list[iter_idx]]
 
         # only learn the layout
         # if batch_idx < self.cfg.layout_learn_only_step + self.cfg.layout_learn_start_step and \
@@ -248,8 +249,8 @@ class PartDreamSystem(BaseLift3DSystem):
         #     bound_list = [self.bound[-1]]
         #     loss_weight_list = [self.loss_weight[-1]]
         #     prompt_utils_list = [self.prompt_utils_list[-1]]
-        #     if self.cfg.use_single_view:
-        #         single_view_prompt_utils_list = [self.single_view_prompt_utils_list[-1]]
+        #     if self.cfg.use_part_expert:
+        #         part_expert_prompt_utils_list = [self.part_expert_prompt_utils_list[-1]]
 
     
         projected_means, projected_vars = self.render_gaussian(batch,
@@ -341,39 +342,39 @@ class PartDreamSystem(BaseLift3DSystem):
                 cropped_part_grads_list = []
                 for camera_idx, rendered_image in enumerate(rendered_images):
     
-                    single_view_opacity_mask = opacity_mask[camera_idx, :, :, 0]
-                    opacity_i, opacity_j = torch.nonzero(single_view_opacity_mask, as_tuple=True)
+                    part_expert_opacity_mask = opacity_mask[camera_idx, :, :, 0]
+                    opacity_i, opacity_j = torch.nonzero(part_expert_opacity_mask, as_tuple=True)
                     if len(opacity_i) != 0:
                         opacity_j_min, opacity_j_max = opacity_j.min(), opacity_j.max()
-                        # single_view_min_x = max(image_h - x_max, opacity_j_min-int(0.1*image_h))
-                        # single_view_max_x = min(image_h - x_min, opacity_j_max+int(0.1*image_h))
-                        single_view_min_x = opacity_j_min-int(0.1*image_h)
-                        single_view_max_x =  opacity_j_max+int(0.1*image_h)
-                        single_view_min_y = opacity_i.min()-int(0.1*image_h)
-                        single_view_max_y = opacity_i.max()+int(0.1*image_h)
+                        # part_expert_min_x = max(image_h - x_max, opacity_j_min-int(0.1*image_h))
+                        # part_expert_max_x = min(image_h - x_min, opacity_j_max+int(0.1*image_h))
+                        part_expert_min_x = opacity_j_min-int(0.1*image_h)
+                        part_expert_max_x =  opacity_j_max+int(0.1*image_h)
+                        part_expert_min_y = opacity_i.min()-int(0.1*image_h)
+                        part_expert_max_y = opacity_i.max()+int(0.1*image_h)
                     else:
-                        single_view_min_x, single_view_max_x = image_h-x_max, image_h-x_min
-                        single_view_min_y, single_view_max_y = image_h-z_max, image_h-z_min
+                        part_expert_min_x, part_expert_max_x = image_h-x_max, image_h-x_min
+                        part_expert_min_y, part_expert_max_y = image_h-z_max, image_h-z_min
 
-                    single_view_max_x = min(single_view_max_x, image_h)
-                    single_view_max_y = min(single_view_max_y, image_h)
-                    single_view_min_x = max(single_view_min_x, 0)
-                    single_view_min_y = max(single_view_min_y, 0)
+                    part_expert_max_x = min(part_expert_max_x, image_h)
+                    part_expert_max_y = min(part_expert_max_y, image_h)
+                    part_expert_min_x = max(part_expert_min_x, 0)
+                    part_expert_min_y = max(part_expert_min_y, 0)
 
-                    if single_view_min_x == single_view_max_x or single_view_min_y == single_view_max_y:
-                        single_view_min_x, single_view_max_x = image_h-x_max, image_h-x_min
-                        single_view_min_y, single_view_max_y = image_h-z_max, image_h-z_min
+                    if part_expert_min_x == part_expert_max_x or part_expert_min_y == part_expert_max_y:
+                        part_expert_min_x, part_expert_max_x = image_h-x_max, image_h-x_min
+                        part_expert_min_y, part_expert_max_y = image_h-z_max, image_h-z_min
                     
                     if not is_global_step:
-                        crop_anchor_points.append([single_view_min_x, single_view_max_x, single_view_min_y, single_view_max_y])
+                        crop_anchor_points.append([part_expert_min_x, part_expert_max_x, part_expert_min_y, part_expert_max_y])
                 
 
                     cropped_rendered_image = \
-                        rendered_image[single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
+                        rendered_image[part_expert_min_y:part_expert_max_y, part_expert_min_x:part_expert_max_x]
         
                     if is_global_step:
-                        cropped_weight_filter = weight_filters[:, camera_idx, single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
-                        cropped_part_grad = all_part_grads[:, camera_idx, single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
+                        cropped_weight_filter = weight_filters[:, camera_idx, part_expert_min_y:part_expert_max_y, part_expert_min_x:part_expert_max_x]
+                        cropped_part_grad = all_part_grads[:, camera_idx, part_expert_min_y:part_expert_max_y, part_expert_min_x:part_expert_max_x]
 
                     rendered_image = F.interpolate(cropped_rendered_image.permute(2, 0, 1).unsqueeze(0),
                                                         (image_h, image_w),
@@ -480,17 +481,17 @@ class PartDreamSystem(BaseLift3DSystem):
 
                 
             
-        if self.cfg.use_single_view:
-            single_view_guidance_out_list = [self.single_view_guidance(out["comp_rgb"],single_view_prompt_utils_list[idx], **batch) \
+        if self.cfg.use_part_expert and not is_global_step: # we only apply it to part
+            part_expert_guidance_out_list = [self.part_expert_guidance(out["comp_rgb"],part_expert_prompt_utils_list[idx], **batch) \
                                             for idx, out in enumerate(out_list)]
         else:
-            single_view_guidance_out_list = [{} for _ in range(len(out_list))]
+            part_expert_guidance_out_list = [{} for _ in range(len(out_list))]
 
         # iterate the loss of each compositional part ========================================
         loss = 0.0
         subpart_idx = 0
         handle = None
-        for out, guidance_out, single_view_guidance_out in zip(out_list, guidance_out_list, single_view_guidance_out_list):
+        for out, guidance_out, part_expert_guidance_out in zip(out_list, guidance_out_list, part_expert_guidance_out_list):
             sub_loss = 0.0
             for name, value in guidance_out.items():
                 if name == "handle":
@@ -501,8 +502,8 @@ class PartDreamSystem(BaseLift3DSystem):
                         sub_loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
         
             
-            if self.cfg.use_single_view:
-                for name, value in single_view_guidance_out.items():
+            if self.cfg.use_part_expert:
+                for name, value in part_expert_guidance_out.items():
                     self.log(f"train/{name}", value)
                     if name.startswith("loss_"):
                         sub_loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])*5
@@ -751,13 +752,13 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
         use_iterative: bool = False
         use_2d_recentering: bool = False
 
-        use_single_view: bool = False
+        use_part_expert: bool = False
 
-        single_view_guidance_type: str = ""
-        single_view_guidance: dict = field(default_factory=dict)
+        part_expert_guidance_type: str = ""
+        part_expert_guidance: dict = field(default_factory=dict)
 
-        single_view_prompt_processor_type: str = ""
-        single_view_prompt_processor: dict = field(default_factory=dict)
+        part_expert_prompt_processor_type: str = ""
+        part_expert_prompt_processor: dict = field(default_factory=dict)
 
         use_geometry_sds: bool = False
         geometry_guidance_type: str = ""
@@ -858,21 +859,21 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             prompt_processor = prompt_processor()
             self.prompt_utils_list.append(prompt_processor)
 
-        if self.cfg.use_single_view:
-            self.single_view_guidance = threestudio.find(self.cfg.single_view_guidance_type)(self.cfg.single_view_guidance)
+        if self.cfg.use_part_expert:
+            self.part_expert_guidance = threestudio.find(self.cfg.part_expert_guidance_type)(self.cfg.part_expert_guidance)
 
             # initialize the single view prompt_processor
-            self.single_view_prompt_processor_list = []
+            self.part_expert_prompt_processor_list = []
             for prompt in self.cfg.prompt_list:
-                self.cfg.single_view_prompt_processor.prompt=prompt
-                self.single_view_prompt_processor = threestudio.find(self.cfg.single_view_prompt_processor_type)(
-                    self.cfg.single_view_prompt_processor
+                self.cfg.part_expert_prompt_processor.prompt=prompt
+                self.part_expert_prompt_processor = threestudio.find(self.cfg.part_expert_prompt_processor_type)(
+                    self.cfg.part_expert_prompt_processor
                 )
-                self.single_view_prompt_processor_list.append(self.single_view_prompt_processor)
-            self.single_view_prompt_utils_list = []
-            for single_view_prompt_processor in self.single_view_prompt_processor_list:
-                single_view_prompt_processor = single_view_prompt_processor()
-                self.single_view_prompt_utils_list.append(single_view_prompt_processor)
+                self.part_expert_prompt_processor_list.append(self.part_expert_prompt_processor)
+            self.part_expert_prompt_utils_list = []
+            for part_expert_prompt_processor in self.part_expert_prompt_processor_list:
+                part_expert_prompt_processor = part_expert_prompt_processor()
+                self.part_expert_prompt_utils_list.append(part_expert_prompt_processor)
             
         # initialize the loss weight
         self.loss_weight = self.cfg.loss_weight
@@ -951,8 +952,8 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             bound_list = [self.bound[iter_idx]]
             loss_weight_list = [self.loss_weight[iter_idx]]
             prompt_utils_list = [self.prompt_utils_list[iter_idx]]
-            if self.cfg.use_single_view:
-                single_view_prompt_utils_list = [self.single_view_prompt_utils_list[iter_idx]]
+            if self.cfg.use_part_expert:
+                part_expert_prompt_utils_list = [self.part_expert_prompt_utils_list[iter_idx]]
 
             # # only learn the layout
             # if batch_idx < self.cfg.layout_learn_only_step + self.cfg.layout_learn_start_step and \
@@ -962,8 +963,8 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
             #     bound_list = [self.bound[-1]]
             #     loss_weight_list = [self.loss_weight[-1]]
             #     prompt_utils_list = [self.prompt_utils_list[-1]]
-            #     if self.cfg.use_single_view:
-            #         single_view_prompt_utils_list = [self.single_view_prompt_utils_list[-1]]
+            #     if self.cfg.use_part_expert:
+            #         part_expert_prompt_utils_list = [self.part_expert_prompt_utils_list[-1]]
 
         
 
@@ -1054,31 +1055,31 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                 for jdx, rendered_image in enumerate(rendered_images):
                     if is_global_step:
                         global_weight_filter = global_weight_filters[jdx]
-                    single_view_opacity_mask = opacity_mask[jdx, :, :, 0]
-                    opacity_i, opacity_j = torch.nonzero(single_view_opacity_mask, as_tuple=True)
+                    part_expert_opacity_mask = opacity_mask[jdx, :, :, 0]
+                    opacity_i, opacity_j = torch.nonzero(part_expert_opacity_mask, as_tuple=True)
                     if len(opacity_i) != 0:
                         opacity_j_min, opacity_j_max = opacity_j.min(), opacity_j.max()
-                        # single_view_min_x = max(image_h - x_max, opacity_j_min-int(0.1*image_h))
-                        # single_view_max_x = min(image_h - x_min, opacity_j_max+int(0.1*image_h))
-                        single_view_min_x = opacity_j_min-int(0.1*image_h)
-                        single_view_max_x =  opacity_j_max+int(0.1*image_h)
-                        single_view_min_y = opacity_i.min()-int(0.1*image_h)
-                        single_view_max_y = opacity_i.max()+int(0.1*image_h)
+                        # part_expert_min_x = max(image_h - x_max, opacity_j_min-int(0.1*image_h))
+                        # part_expert_max_x = min(image_h - x_min, opacity_j_max+int(0.1*image_h))
+                        part_expert_min_x = opacity_j_min-int(0.1*image_h)
+                        part_expert_max_x =  opacity_j_max+int(0.1*image_h)
+                        part_expert_min_y = opacity_i.min()-int(0.1*image_h)
+                        part_expert_max_y = opacity_i.max()+int(0.1*image_h)
                     else:
-                        single_view_min_x, single_view_max_x = image_h-x_max, image_h-x_min
-                        single_view_min_y, single_view_max_y = image_h-z_max, image_h-z_min
+                        part_expert_min_x, part_expert_max_x = image_h-x_max, image_h-x_min
+                        part_expert_min_y, part_expert_max_y = image_h-z_max, image_h-z_min
 
-                    single_view_max_x = min(single_view_max_x, image_h)
-                    single_view_max_y = min(single_view_max_y, image_h)
-                    single_view_min_x = max(single_view_min_x, 0)
-                    single_view_min_y = max(single_view_min_y, 0)
+                    part_expert_max_x = min(part_expert_max_x, image_h)
+                    part_expert_max_y = min(part_expert_max_y, image_h)
+                    part_expert_min_x = max(part_expert_min_x, 0)
+                    part_expert_min_y = max(part_expert_min_y, 0)
 
                     cropped_rendered_image = \
-                        rendered_image[single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
+                        rendered_image[part_expert_min_y:part_expert_max_y, part_expert_min_x:part_expert_max_x]
           
                     h, w = cropped_rendered_image.shape[0], cropped_rendered_image.shape[1]
                     if is_global_step:
-                        global_weight_filter = global_weight_filter[single_view_min_y:single_view_max_y, single_view_min_x:single_view_max_x]
+                        global_weight_filter = global_weight_filter[part_expert_min_y:part_expert_max_y, part_expert_min_x:part_expert_max_x]
                     if h==0 or w==0:
                         cropped_rendered_image = rendered_image[image_h-z_max:image_h-z_min, image_h-x_max:image_h-x_min]
                         if is_global_step:
@@ -1123,17 +1124,17 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                                                gaussian_var_div=self.cfg.gaussian_var_rescales[iter_idx]) \
                                 for idx, out in enumerate(out_list)]
             
-        if self.cfg.use_single_view:
-            single_view_guidance_out_list = [self.single_view_guidance(out["comp_rgb"],single_view_prompt_utils_list[idx], **batch) \
+        if self.cfg.use_part_expert:
+            part_expert_guidance_out_list = [self.part_expert_guidance(out["comp_rgb"],part_expert_prompt_utils_list[idx], **batch) \
                                             for idx, out in enumerate(out_list)]
         else:
-            single_view_guidance_out_list = [{} for _ in range(len(out_list))]
+            part_expert_guidance_out_list = [{} for _ in range(len(out_list))]
 
         # iterate the loss of each compositional part ========================================
         loss = 0.0
         subpart_idx = 0
         handle = None
-        for out, guidance_out, single_view_guidance_out in zip(out_list, guidance_out_list, single_view_guidance_out_list):
+        for out, guidance_out, part_expert_guidance_out in zip(out_list, guidance_out_list, part_expert_guidance_out_list):
             sub_loss = 0.0
             for name, value in guidance_out.items():
                 if name == "handle":
@@ -1144,8 +1145,8 @@ class MVDreamMultiBoundedSystem(BaseLift3DSystem):
                         sub_loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")]) * self.C(self.cfg.guidance_weight[0])
         
             
-            if self.cfg.use_single_view:
-                for name, value in single_view_guidance_out.items():
+            if self.cfg.use_part_expert:
+                for name, value in part_expert_guidance_out.items():
                     self.log(f"train/{name}", value)
                     if name.startswith("loss_"):
                         sub_loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])* self.C(self.cfg.guidance_weight[1])
@@ -1380,11 +1381,11 @@ class MVDreamDeepfloydSystem(BaseLift3DSystem):
     class Config(BaseLift3DSystem.Config):
         visualize_samples: bool = False
 
-        single_view_guidance_type: str = ""
-        single_view_guidance: dict = field(default_factory=dict)
+        part_expert_guidance_type: str = ""
+        part_expert_guidance: dict = field(default_factory=dict)
 
-        single_view_prompt_processor_type: str = ""
-        single_view_prompt_processor: dict = field(default_factory=dict)
+        part_expert_prompt_processor_type: str = ""
+        part_expert_prompt_processor: dict = field(default_factory=dict)
 
         guidance_weight: List[float] = None
 
@@ -1400,13 +1401,13 @@ class MVDreamDeepfloydSystem(BaseLift3DSystem):
         self.prompt_utils = self.prompt_processor()
 
 
-        self.single_view_guidance = threestudio.find(self.cfg.single_view_guidance_type)(self.cfg.single_view_guidance)
-        self.cfg.single_view_prompt_processor.prompt = self.cfg.prompt_processor.prompt
-        self.single_view_prompt_processor = threestudio.find(self.cfg.single_view_prompt_processor_type)(
-            self.cfg.single_view_prompt_processor
+        self.part_expert_guidance = threestudio.find(self.cfg.part_expert_guidance_type)(self.cfg.part_expert_guidance)
+        self.cfg.part_expert_prompt_processor.prompt = self.cfg.prompt_processor.prompt
+        self.part_expert_prompt_processor = threestudio.find(self.cfg.part_expert_prompt_processor_type)(
+            self.cfg.part_expert_prompt_processor
         )
 
-        self.single_view_prompt_utils = self.single_view_prompt_processor()
+        self.part_expert_prompt_utils = self.part_expert_prompt_processor()
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         return self.renderer(**batch)
@@ -1415,7 +1416,7 @@ class MVDreamDeepfloydSystem(BaseLift3DSystem):
         out = self(batch)
 
         guidance_out = self.guidance(out["comp_rgb"], self.prompt_utils, **batch)
-        single_view_guidance_out = self.single_view_guidance(out["comp_rgb"], self.single_view_prompt_utils, **batch)
+        part_expert_guidance_out = self.part_expert_guidance(out["comp_rgb"], self.part_expert_prompt_utils, **batch)
 
         loss = 0.0
 
@@ -1424,7 +1425,7 @@ class MVDreamDeepfloydSystem(BaseLift3DSystem):
             if name.startswith("loss_"):
                 loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")]) * self.C(self.cfg.guidance_weight[0])
             
-        for name, value in single_view_guidance_out.items():
+        for name, value in part_expert_guidance_out.items():
             self.log(f"train/{name}", value)
             if name.startswith("loss_"):
                 loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")]) * self.C(self.cfg.guidance_weight[1])
