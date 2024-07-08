@@ -1,7 +1,0 @@
-Given a prompt: LAST_pROMPT and a negative prompt LAST_nEGATIVE_pROMPT, several text-to-image models generates several images you see.
-
-Please modify the prompt and also write a negative prompt (negative prompt describes the thing you don't want to appear in the image) to generate another round of images that fit more to the description of the original prompt: "ORIGINAL_pROMPT":
-
-FORMAT:
-Prompt:
-Negative Prompt:

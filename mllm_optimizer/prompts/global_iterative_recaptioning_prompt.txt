@@ -1,0 +1,11 @@
+Given a prompt: LAST_pROMPT and a negative prompt LAST_nEGATIVE_pROMPT, an text-to-image model generates several images which depict a chimera-like mythical creature.
+
+HARD RULES:
+The original prompt emphasizes a mythical creature that is made up of different body parts from distinct animals. Please make sure you paraphrase the prompt so that no part or feature of animals in the original prompts is missing.
+
+INSTRUCTIONS:
+Please modify the prompt and also write a negative prompt (negative prompt describes the thing you don't want to appear in the image) to generate another image that fits more to the description of the original prompt: "ORIGINAL_pROMPT":
+
+FORMAT:
+Prompt:
+Negative Prompt:

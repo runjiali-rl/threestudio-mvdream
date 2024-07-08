@@ -41,10 +41,12 @@ def encode_image(image_paths):
 def process_meta_prompt(meta_prompt_path,
                         original_image_prompt,
                         last_image_prompt,
-                        negative_prompt="None"):
+                        negative_prompt=None):
     with open(meta_prompt_path, "r") as f:
         meta_prompt = f.read()
 
+    if not negative_prompt:
+        negative_prompt = "None"
     meta_prompt = meta_prompt.replace("ORIGINAL_pROMPT", original_image_prompt)
     meta_prompt = meta_prompt.replace("LAST_pROMPT", last_image_prompt)
     meta_prompt = meta_prompt.replace("LAST_nEGATIVE_pROMPT", negative_prompt)
