@@ -212,6 +212,7 @@ class DiffusionModel():
     def __init__(self, model_name, cache_dir):
         self.model = MODEL_DICT[model_name](cache_dir)
         self.model_name = model_name
+        self.model.pipe.enable_model_cpu_offload()
     
     def generate_images(self, prompt, negative_prompt=None, combined=False):
         if self.model_name == "mvdream":

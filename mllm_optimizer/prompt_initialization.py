@@ -16,12 +16,12 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api_key", type=str, required=True)
     parser.add_argument("--save_dir", type=str, default="custom/threestudio-mvdream/intermediate_images")
-    parser.add_argument("--cache_dir", type=str, default="/homes/55/runjia/storage/diffusion_model_weights")
+    parser.add_argument("--cache_dir", type=str, default="/homes/55/runjia/scratch/diffusion_model_weights")
     parser.add_argument("--part_model_name", type=str, default="mvdream,deepfloyd")
     parser.add_argument("--global_model_name", type=str, default="mvdream,stable_diffusion_3")
     parser.add_argument("--iteration_num", type=int, default=4)
     parser.add_argument("--composite_description", type=str, default="A dog with a cat head and dragon wings")
-    parser.add_argument("--meta_prompt_path", type=str, default="custom/threestudio-mvdream/prompt_processor/prompts/iterative_recaptioning_prompt.txt")
+    parser.add_argument("--meta_prompt_path", type=str, default="custom/threestudio-mvdream/mllm_optimizer/prompts/iterative_recaptioning_prompt.txt")
 
     return parser.parse_args()
 
@@ -29,11 +29,11 @@ def parse_args():
 def initialize_prompt(composite_description,
                       api_key,
                       max_trial_times=100):
-    meta_prompt_path = "custom/threestudio-mvdream/prompt_processor/prompts/initialization_prompt.txt"
-    with open(meta_prompt_path, "r") as f:
-        meta_prompt = f.read()
+    initialize_meta_prompt_path = "custom/threestudio-mvdream/mllm_optimizer/prompts/initialization_prompt.txt"
+    with open(initialize_meta_prompt_path, "r") as f:
+        initialize_meta_prompt = f.read()
 
-    meta_prompt = meta_prompt.replace("COMPOSITE_PROMPT", composite_description)
+    initialize_meta_prompt = initialize_meta_prompt.replace("COMPOSITE_PROMPT", composite_description)
     client = OpenAI(
         # This is the default and can be omitted
         api_key=api_key,
@@ -46,7 +46,7 @@ def initialize_prompt(composite_description,
                     messages=[
                         {
                             "role": "user",
-                            "content": meta_prompt,
+                            "content": initialize_meta_prompt,
                         }
                     ],
                     model="gpt-4o",
@@ -83,7 +83,8 @@ def parse_composite_creature_description(description: str) -> dict:
         spatial_center = tuple(map(float, match[2].split(',')))
         radius = float(match[3])
         shape = match[4].strip()
-        
+        if "body" in part_name.lower(): # this is already captured in the composite creature description
+            continue
         parts.append({
             'Part Name': part_name,
             'Description': part_description,
@@ -113,8 +114,8 @@ def main():
     part_model_names = args.part_model_name.split(",")
     global_model_names = args.global_model_name.split(",")
     negative_prompt = "hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon"
-
-
+    new_part_prompts = {}
+    new_negative_part_prompts = {}
     for part in structured_results["Parts"]:
         original_prompt = part["Description"]
         prompt_path = original_prompt.replace(" ", "_")
@@ -143,6 +144,8 @@ def main():
                                                             args.api_key
                                                             )
             negative_prompt = new_negative_prompt + ", " + negative_prompt
+        new_part_prompts[original_prompt] = prompt
+        new_negative_part_prompts[original_prompt] = negative_prompt
     
     print(prompt)
     stop = 1
