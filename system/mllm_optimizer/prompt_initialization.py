@@ -1,8 +1,8 @@
 import argparse
 from openai import OpenAI
 import re
-from diffusion_models import DiffusionModel
-from partdream_recaptioning import image_prompt_iteration
+from .diffusion_models import DiffusionModel
+from .partdream_recaptioning import image_prompt_iteration
 import torch
 import os
 from tqdm import tqdm

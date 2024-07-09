@@ -1,0 +1,8 @@
+{
+    "mvdream": {
+        "A lion head": "Hollow space, gaps, ugly, bad anatomy, blurry, pixelated, obscure, unnatural colors, poor lighting, dull, unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon, full body, body parts other than the head, several faces."
+    },
+    "deepfloyd": {
+        "A lion head": "hollow space, gaps, ugly, bad anatomy, blurry, pixelated, obscure, unnatural colors, poor lighting, dull, unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon, full body, several"
+    }
+}
