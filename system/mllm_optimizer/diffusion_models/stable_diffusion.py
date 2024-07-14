@@ -204,8 +204,8 @@ MODEL_DICT = {
     "mobius": Mobius,
     "fluently": Fluently,
     "visionix": Visionix,
-    "deepfloyd": DeepFloyd,
-    "mvdream": MVDream
+    "deep-floyd-guidance": DeepFloyd,
+    "mvdream-multiview-diffusion-guidance": MVDream
 }
 
 class DiffusionModel():

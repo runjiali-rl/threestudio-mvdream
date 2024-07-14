@@ -112,9 +112,14 @@ def run_model_optimization(
     global_meta_prompt_path = "custom/threestudio-mvdream/system/mllm_optimizer/prompts/global_iterative_recaptioning_prompt.txt"
 
     file_name = composite_description.replace(" ", "_")
-    if os.path.exists(f"{save_dir}/saved_prompts/{file_name}_optimized_prompts.json"):
+    save_path_check = f"{save_dir}/saved_prompts/{file_name}_{iteration_num}_optimized_part_prompts.json"
+    if os.path.exists(save_path_check):
         print("The optimized prompts for this composite creature description have already been generated.")
-        return
+        optimized_part_prompts = json.load(open(f"{save_dir}/saved_prompts/{file_name}_{iteration_num}_optimized_part_prompts.json"))
+        optimized_negative_part_prompts = json.load(open(f"{save_dir}/saved_prompts/{file_name}_{iteration_num}_optimized_negative_part_prompts.json"))
+        optimized_global_prompts = json.load(open(f"{save_dir}/saved_prompts/{file_name}_{iteration_num}_optimized_global_prompts.json"))
+        optimized_negative_global_prompts = json.load(open(f"{save_dir}/saved_prompts/{file_name}_{iteration_num}_optimized_negative_global_prompts.json"))
+        return optimized_global_prompts, optimized_negative_global_prompts, optimized_part_prompts, optimized_negative_part_prompts
 
     structured_results = initialize_prompt(composite_description, api_key)
     
@@ -161,8 +166,11 @@ def process_models(
     model_names, meta_prompt_path, structured_parts, iteration_num,
     save_dir, cache_dir, original_negative_prompt, optimized_prompts, optimized_negative_prompts,
     api_key, global_mode=False
-):
-    models = [DiffusionModel(name, cache_dir=cache_dir) for name in model_names]
+):  
+    if iteration_num == 0:
+        models = [None for _ in model_names]
+    else:
+        models = [DiffusionModel(name, cache_dir=cache_dir) for name in model_names]
 
     for model_idx, model in enumerate(models):
         for part in structured_parts:

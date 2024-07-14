@@ -187,6 +187,7 @@ def subtract_boundary(boundaries: list) -> np.ndarray:
 def combine_boundary(boundaries: list,
                      include_all: bool=False,
                      use_subtraction: bool=False,
+                     exclude_idx: list=None,
                      igore_idx: list=None) -> np.ndarray:
     
 
@@ -197,8 +198,12 @@ def combine_boundary(boundaries: list,
             if igore_idx and igore_idx[i]:
                 continue
             boundaries[i] = subtract_boundary([boundaries[i], add_boundary(boundaries[:i])])
+    if exclude_idx:
+        for i in exclude_idx:
+            del boundaries[i]
     if include_all:
         boundaries.append(combined_boundary)
+
 
     combined_boundary = np.array(boundaries)
     assert(combined_boundary.shape[0] == len(boundaries))
@@ -265,7 +270,8 @@ if __name__ == "__main__":
     combined_boundary = combine_boundary([ball_boundary, rectangle_boundary_3],
                                         include_all=True,
                                         use_subtraction=False,
-                                        igore_idx=[False, False])
+                                        igore_idx=[False, False],
+                                        exclude_idx=[1])
     
     
     # boundary_intersection = create_intersection([rectangle_boundary_2, rectangle_boundary_3])

@@ -72,30 +72,27 @@ system:
 
   # prompt_list: ['a lion head', 'a sheep body, no head', a lion head connected to a sheep body smoothly']
   # part_expert_prompt_list: []
-  loss_weight: [1.8, 1, 2]
+  prompt: ???
+  prompt_save_path: "custom/threestudio-mvdream/system/mllm_optimizer/intermediate_save"
+  # part_model_names: "mvdream,deepfloyd"
+  # global_model_names: "mvdream"
+  iteration_num: 3
+  api_key: ???
+  cache_dir: "/homes/55/runjia/scratch/diffusion_model_weights"
+
+  # loss_weight: [1.8, 1, 2]
 
   prompt_processor:
     pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
-    prompt: a sheep with a lion head
+    prompt: place_holder
     negative_prompt: "hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon"
     front_threshold: 30.
     back_threshold: 30.
 
-
-  part_expert_prompt_processor_type: "deep-floyd-prompt-processor"
-  part_expert_prompt_processor:
-    prompt: 
-    negative_prompt: "hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, disconnected"
-
-
-  part_expert_guidance_type: "deep-floyd-guidance"
-  part_expert_guidance:
-    enable_memory_efficient_attention: True
-    enable_sequential_cpu_offload: True
-
-  guidance_type: "mvdream-multiview-diffusion-guidance"
+  guidance_tyoe: "partdream-guidance"
+  # guidance_type: "mvdream-multiview-diffusion-guidance"
   # geometry_guidance_type: "mvdream-multiview-dynamic-geometry-diffusion-guidance"
-  geometry_guidance_type: "partdream-guidance"
+  # geometry_guidance_type: "partdream-guidance"
   guidance:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
@@ -104,6 +101,19 @@ system:
     max_step_percent: [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
+
+
+  part_expert_prompt_processor_type: "deep-floyd-prompt-processor"
+  part_expert_prompt_processor:
+    prompt: place_holder
+    negative_prompt: "hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, disconnected"
+
+
+  part_expert_guidance_type: "deep-floyd-guidance"
+  part_expert_guidance:
+    enable_memory_efficient_attention: True
+    enable_sequential_cpu_offload: True
+
 
   use_part_expert: False
   use_geometry_sds: True

@@ -34,10 +34,20 @@ class PartDreamSystem(BaseLift3DSystem):
     class Config(BaseLift3DSystem.Config):
         visualize_samples: bool = False
         bound_path: str = None
+
         # bound_intersection_path: str = None
-        prompt_list: List[str] = None
-        loss_weight: List[float] = None
         use_2d_recentering: bool = False
+
+        # process prompt
+        prompt: str = ""
+        prompt_save_path: str = ""
+        iteration_num: int = 0
+        cache_dir: str = None
+        save_dir: str = ""
+        api_key: str = ""
+
+        # guidance model names
+
 
         use_part_expert: bool = False
 
@@ -47,8 +57,6 @@ class PartDreamSystem(BaseLift3DSystem):
         part_expert_prompt_processor_type: str = ""
         part_expert_prompt_processor: dict = field(default_factory=dict)
 
-        use_geometry_sds: bool = False
-        geometry_guidance_type: str = ""
 
         use_learnable_layout: bool = False
         update_layout: bool = False
@@ -125,17 +133,19 @@ class PartDreamSystem(BaseLift3DSystem):
             self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
 
         # initialize mvdream prompt_processor
+        optimzied_global_prompts, optimized_negative_global_prompts, optimized_part_prompts, \
+            optimized_negative_part_prompts = run_model_optimization(self.cfg.prompt,
+                                                                    self.cfg.part_model_names,
+                                                                    self.cfg.global_model_names,
+                                                                    self.cfg.api_key,
+                                                                    self.cfg.iteration_num,
+                                                                    self.cfg.cache_dir,
+                                                                    self.cfg.prompt_save_path,)
+                                                                                                               
         self.prompt_processor_list = []
-        original_negative_prompt = self.cfg.prompt_processor.negative_prompt
+
         for prompt_idx, prompt in enumerate(self.cfg.prompt_list):
             self.cfg.prompt_processor.prompt=prompt
-            if self.cfg.use_mutual_negative_prompt and prompt_idx != len(self.cfg.prompt_list) - 1:
-                all_negative_prompt = original_negative_prompt
-                for negative_prompt_idx, negative_prompt in enumerate(self.cfg.prompt_list[:-1]):
-                    if negative_prompt_idx == prompt_idx:
-                        continue
-                    all_negative_prompt += f", {negative_prompt}"
-                self.cfg.prompt_processor.negative_prompt = all_negative_prompt
             self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
                 self.cfg.prompt_processor
             )
