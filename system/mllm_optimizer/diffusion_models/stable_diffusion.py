@@ -205,7 +205,8 @@ MODEL_DICT = {
     "fluently": Fluently,
     "visionix": Visionix,
     "deep-floyd-guidance": DeepFloyd,
-    "mvdream-multiview-diffusion-guidance": MVDream
+    "mvdream-multiview-diffusion-guidance": MVDream,
+    "partdream-guidance": MVDream,
 }
 
 class DiffusionModel():

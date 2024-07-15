@@ -45,7 +45,9 @@ system:
       per_level_scale: 1.447269237440378 # max resolution 4096
 
 
-
+  # bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_new.npy"
+  # bound_path: "custom/threestudio-mvdream/bounds/lion_sheep_ball_ab.npy"
+  bound_path: "custom/threestudio-mvdream/bounds/lion_sheep.npy"
 
   material_type: "no-material"
   material:
@@ -59,7 +61,8 @@ system:
     random_aug: true
     share_aug_bg: true
 
-  renderer_type: "nerf-volume-renderer"
+  # renderer_type: "nerf-gaussian-volume-bounded-renderer"
+  renderer_type: "nerf-multi-volume-bounded-renderer"
   renderer:
     radius: ${system.geometry.radius}
     # num_samples_per_ray: 512
@@ -67,9 +70,12 @@ system:
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
 
-
+  # prompt_list: ['a lion head', 'a sheep body, no head', a lion head connected to a sheep body smoothly']
+  # part_expert_prompt_list: []
   prompt: ???
   prompt_save_path: "custom/threestudio-mvdream/system/mllm_optimizer/intermediate_save"
+  # part_model_names: "mvdream,deepfloyd"
+  # global_model_names: "mvdream"
   iteration_num: 3
   api_key: ???
   cache_dir: "/homes/55/runjia/scratch/diffusion_model_weights"
@@ -84,6 +90,9 @@ system:
     back_threshold: 30.
 
   guidance_type: "partdream-guidance"
+  # guidance_type: "mvdream-multiview-diffusion-guidance"
+  # geometry_guidance_type: "mvdream-multiview-dynamic-geometry-diffusion-guidance"
+  # geometry_guidance_type: "partdream-guidance"
   guidance:
     model_name: "sd-v2.1-base-4view"
     ckpt_path: null # path to a pre-downloaded checkpoint file (null for loading from URL)
@@ -106,16 +115,23 @@ system:
     enable_sequential_cpu_offload: True
 
 
-  use_global_attn: True
-  global_model_name: stabilityai/stable-diffusion-3-medium-diffusers
-
-
   use_part_expert: False
   use_2d_recentering: True
-
+  use_learnable_layout: False
+  layout_regularization: [False, True, True]
+  layout_regularization_lambda: [0.0000001, 1000000000, 1]
 
   visualize: True
+  update_layout: False
+  layout_lr: 1e-4
+  alpha: 1e-2
 
+  # gaussian_learn_start_step: 7000
+  layout_learn_start_step: 100
+  # layout_learn_only_step: 1500
+  layout_learn_stop_step: 6000
+
+  gaussian_var_rescales: [4.5, 4.5]
 
 
 

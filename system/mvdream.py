@@ -13,6 +13,10 @@ import torch.nn.functional as F
 from threestudio.utils.base import update_end_if_possible
 import cv2
 from .mllm_optimizer import run_model_optimization
+from .cross_attention import get_attn_maps_sd3, DenseCRF, crf_refine, attn_map_postprocess, set_layer_with_name_and_path, register_cross_attention_hook
+from diffusers import DiffusionPipeline
+
+
 
 torch.set_float32_matmul_precision('medium')
 torch.random.manual_seed(0)
@@ -30,6 +34,287 @@ def smooth_loss(inputs):
 
 @threestudio.register("partdream-system")
 class PartDreamSystem(BaseLift3DSystem):
+    @dataclass
+    class Config(BaseLift3DSystem.Config):
+        visualize_samples: bool = False
+        prompt: str = ""
+        prompt_save_path: str = ""
+        iteration_num: int = 0
+        cache_dir: str = None
+        save_dir: str = ""
+        api_key: str = ""
+        use_part_expert: bool = False
+
+        # part expert guidance model names
+        part_expert_guidance_type: str = ""
+        part_expert_guidance: dict = field(default_factory=dict)
+        part_expert_prompt_processor_type: str = ""
+        part_expert_prompt_processor: dict = field(default_factory=dict)
+
+        # global guidance model names
+        use_global_attn: bool = False
+        global_model_name: str = "stable-diffusion-3-medium-diffusers"
+
+        use_2d_recentering: bool = False
+        visualize: bool = False
+        mllm_optimize_prompt: bool = False
+
+
+    cfg: Config
+
+    def configure(self) -> None:
+        # set up geometry, material, background, renderer
+        super().configure()
+
+        self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
+        part_model_names = self.cfg.guidance_type
+        global_model_names = self.cfg.guidance_type
+
+        # use mllm to optimize the prompt
+        if self.cfg.mllm_optimize_prompt:
+            print("Optimizing the prompt using MLLM")
+            (optimzied_global_prompts,
+            optimized_negative_global_prompts,
+            optimized_part_prompts,
+            optimized_negative_part_prompts) = run_model_optimization(original_prompt=self.cfg.prompt,
+                                                    part_model_names=part_model_names,
+                                                    global_model_names=global_model_names,
+                                                    api_key=self.cfg.api_key,
+                                                    iteration_num=self.cfg.iteration_num,
+                                                    cache_dir=self.cfg.cache_dir,
+                                                    save_dir=self.cfg.prompt_save_path,)
+        
+            # update the prompt the optimized prompt
+            self.cfg.prompt_processor.prompt = optimzied_global_prompts[self.cfg.guidance_type]['global']
+            self.cfg.prompt_processor.negative_prompt = optimized_negative_global_prompts[self.cfg.guidance_type]['global']
+        else:
+            self.cfg.prompt_processor.prompt = self.cfg.prompt
+
+        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
+            self.cfg.prompt_processor
+        )
+        self.prompt_utils = self.prompt_processor()
+
+        # initialize the global guidance model
+        self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
+                                                        use_safetensors=True,
+                                                        torch_dtype=torch.float16,
+                                                        cache_dir=self.cfg.cache_dir)
+        set_layer_with_name_and_path(self.global_model.transformer)
+        register_cross_attention_hook(self.global_model.transformer)
+        self.global_model = self.global_model.to("cuda")
+        self.global_model.enable_model_cpu_offload()
+        self.postprocessor = DenseCRF(
+            iter_max=10,
+            pos_xy_std=1,
+            pos_w=3,
+            bi_xy_std=67,
+            bi_rgb_std=3,
+            bi_w=4,
+        )
+    
+
+    def get_attn_maps_sd3(self,
+                          images,
+                          use_crf:bool = False):
+        """
+        Get the attention maps from the global guidance model
+        """
+        
+        with torch.no_grad():
+         # if the global model is half precision, convert the image to half precision
+            images = images.to(self.global_model.dtype)
+            attn_map_by_tokens = []
+            for idx, image in enumerate(images):
+                # convert image to PIL image
+                image = Image.fromarray((image.cpu().detach().numpy()*255).astype(np.uint8))
+                output = get_attn_maps_sd3(model=self.global_model,
+                                prompt=self.cfg.prompt_processor.prompt,
+                                negative_prompt=self.cfg.prompt_processor.negative_prompt,
+                                only_animal_names=True,
+                                image=image,
+                                timestep_start=999, # hard coded
+                                timestep_end=0, # hard coded
+                                free_style_timestep_start=501)
+            
+                attn_map_by_token = output['attn_map_by_token']
+
+                if use_crf:
+                    image = output['image']
+
+                    probmaps, _ = crf_refine(image,
+                                            attn_map_by_token,
+                                            self.postprocessor)
+
+
+                    attn_map_by_token = attn_map_postprocess(probmaps,
+                                            attn_map_by_token,
+                                            amplification_factor=1.5)
+                
+                attn_map_by_tokens.append(attn_map_by_token)
+        
+            return attn_map_by_tokens
+
+
+    def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        return self.renderer(**batch)
+
+    def training_step(self, batch, batch_idx):
+        out = self(batch)
+        images = out["comp_rgb"] # 4, H, W, 3 multiview images
+    
+        attn_map_by_token = self.get_attn_maps_sd3(images)
+
+        guidance_out = self.guidance(out["comp_rgb"], self.prompt_utils, **batch)
+
+        loss = 0.0
+
+        for name, value in guidance_out.items():
+            self.log(f"train/{name}", value)
+            if name.startswith("loss_"):
+                loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
+
+        if self.C(self.cfg.loss.lambda_orient) > 0:
+            if "normal" not in out:
+                raise ValueError(
+                    "Normal is required for orientation loss, no normal is found in the output."
+                )
+            loss_orient = (
+                out["weights"].detach()
+                * dot(out["normal"], out["t_dirs"]).clamp_min(0.0) ** 2
+            ).sum() / (out["opacity"] > 0).sum()
+            self.log("train/loss_orient", loss_orient)
+            loss += loss_orient * self.C(self.cfg.loss.lambda_orient)
+
+        if self.C(self.cfg.loss.lambda_sparsity) > 0:
+            loss_sparsity = (out["opacity"] ** 2 + 0.01).sqrt().mean()
+            self.log("train/loss_sparsity", loss_sparsity)
+            loss += loss_sparsity * self.C(self.cfg.loss.lambda_sparsity)
+
+        if self.C(self.cfg.loss.lambda_opaque) > 0:
+            opacity_clamped = out["opacity"].clamp(1.0e-3, 1.0 - 1.0e-3)
+            loss_opaque = binary_cross_entropy(opacity_clamped, opacity_clamped)
+            self.log("train/loss_opaque", loss_opaque)
+            loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
+
+        # z variance loss proposed in HiFA: http://arxiv.org/abs/2305.18766
+        # helps reduce floaters and produce solid geometry
+        if self.C(self.cfg.loss.lambda_z_variance) > 0:
+            loss_z_variance = out["z_variance"][out["opacity"] > 0.5].mean()
+            self.log("train/loss_z_variance", loss_z_variance)
+            loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
+
+        if (
+            hasattr(self.cfg.loss, "lambda_eikonal")
+            and self.C(self.cfg.loss.lambda_eikonal) > 0
+        ):
+            loss_eikonal = (
+                (torch.linalg.norm(out["sdf_grad"], ord=2, dim=-1) - 1.0) ** 2
+            ).mean()
+            self.log("train/loss_eikonal", loss_eikonal)
+            loss += loss_eikonal * self.C(self.cfg.loss.lambda_eikonal)
+
+        for name, value in self.cfg.loss.items():
+            self.log(f"train_params/{name}", self.C(value))
+
+        return {"loss": loss}
+
+    def validation_step(self, batch, batch_idx):
+        out = self(batch)
+        self.save_image_grid(
+            f"it{self.true_global_step}-{batch['index'][0]}.png",
+            (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_rgb"][0],
+                        "kwargs": {"data_format": "HWC"},
+                    },
+                ]
+                if "comp_rgb" in out
+                else []
+            )
+            + (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_normal"][0],
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    }
+                ]
+                if "comp_normal" in out
+                else []
+            )
+            + [
+                {
+                    "type": "grayscale",
+                    "img": out["opacity"][0, :, :, 0],
+                    "kwargs": {"cmap": None, "data_range": (0, 1)},
+                },
+            ],
+            name="validation_step",
+            step=self.true_global_step,
+        )
+
+    def on_validation_epoch_end(self):
+        pass
+
+    def test_step(self, batch, batch_idx):
+        out = self(batch)
+        self.save_image_grid(
+            f"it{self.true_global_step}-test/{batch['index'][0]}.png",
+            (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_rgb"][0],
+                        "kwargs": {"data_format": "HWC"},
+                    },
+                ]
+                if "comp_rgb" in out
+                else []
+            )
+            + (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_normal"][0],
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    }
+                ]
+                if "comp_normal" in out
+                else []
+            )
+            + [
+                {
+                    "type": "grayscale",
+                    "img": out["opacity"][0, :, :, 0],
+                    "kwargs": {"cmap": None, "data_range": (0, 1)},
+                },
+            ],
+            name="test_step",
+            step=self.true_global_step,
+        )
+
+    def on_test_epoch_end(self):
+        self.save_img_sequence(
+            f"it{self.true_global_step}-test",
+            f"it{self.true_global_step}-test",
+            "(\d+)\.png",
+            save_format="mp4",
+            fps=30,
+            name="test",
+            step=self.true_global_step,
+        )
+
+
+
+
+
+
+
+@threestudio.register("partdream-system-legacy")
+class PartDreamSystemLegacy(BaseLift3DSystem):
     @dataclass
     class Config(BaseLift3DSystem.Config):
         visualize_samples: bool = False

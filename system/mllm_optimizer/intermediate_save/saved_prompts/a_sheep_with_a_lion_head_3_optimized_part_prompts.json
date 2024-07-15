@@ -1,8 +1,5 @@
 {
-    "mvdream": {
-        "A lion head": "A close-up of a lion's head, focusing on the lion's face and its mane. Detailed and sharp features, with natural colors."
-    },
-    "deepfloyd": {
-        "A lion head": "A lion head"
+    "partdream-guidance": {
+        "A lion head": "Lion head, close-up, highly detailed, realistic, sharp focus"
     }
 }

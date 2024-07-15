@@ -21,20 +21,20 @@ def parse_args():
     parser.add_argument("--part_model_name", type=str, default="mvdream,deepfloyd")
     parser.add_argument("--global_model_name", type=str, default="mvdream,stable_diffusion_3")
     parser.add_argument("--iteration_num", type=int, default=3)
-    parser.add_argument("--composite_description", type=str, default="A dog with a frog head and dragon wings")
+    parser.add_argument("--original_prompt", type=str, default="A dog with a frog head and dragon wings")
 
 
     return parser.parse_args()
 
 
-def initialize_prompt(composite_description,
+def initialize_prompt(original_prompt,
                       api_key,
                       max_trial_times=100):
     initialize_meta_prompt_path = "custom/threestudio-mvdream/system/mllm_optimizer/prompts/initialization_prompt.txt"
     with open(initialize_meta_prompt_path, "r") as f:
         initialize_meta_prompt = f.read()
 
-    initialize_meta_prompt = initialize_meta_prompt.replace("COMPOSITE_PROMPT", composite_description)
+    initialize_meta_prompt = initialize_meta_prompt.replace("COMPOSITE_PROMPT", original_prompt)
     client = OpenAI(
         # This is the default and can be omitted
         api_key=api_key,
@@ -100,18 +100,18 @@ def parse_composite_creature_description(description: str) -> dict:
 
 
 def run_model_optimization(
-    composite_description,
-    part_model_names,
-    global_model_names,
-    api_key,
-    iteration_num=3,
-    cache_dir=None,
-    save_dir= "custom/threestudio-mvdream/system/mllm_optimizer/intermediate_save"
+    original_prompt: str,
+    part_model_names: str,
+    global_model_names: str,
+    api_key: str,
+    iteration_num: int = 3,
+    cache_dir: str = None,
+    save_dir: str = "custom/threestudio-mvdream/system/mllm_optimizer/intermediate_save"
 ):
     part_meta_prompt_path = "custom/threestudio-mvdream/system/mllm_optimizer/prompts/part_iterative_recaptioning_prompt.txt"
     global_meta_prompt_path = "custom/threestudio-mvdream/system/mllm_optimizer/prompts/global_iterative_recaptioning_prompt.txt"
 
-    file_name = composite_description.replace(" ", "_")
+    file_name = original_prompt.replace(" ", "_")
     save_path_check = f"{save_dir}/saved_prompts/{file_name}_{iteration_num}_optimized_part_prompts.json"
     if os.path.exists(save_path_check):
         print("The optimized prompts for this composite creature description have already been generated.")
@@ -121,7 +121,7 @@ def run_model_optimization(
         optimized_negative_global_prompts = json.load(open(f"{save_dir}/saved_prompts/{file_name}_{iteration_num}_optimized_negative_global_prompts.json"))
         return optimized_global_prompts, optimized_negative_global_prompts, optimized_part_prompts, optimized_negative_part_prompts
 
-    structured_results = initialize_prompt(composite_description, api_key)
+    structured_results = initialize_prompt(original_prompt, api_key)
     
     part_model_names = part_model_names.split(",")
     global_model_names = global_model_names.split(",")
@@ -145,7 +145,7 @@ def run_model_optimization(
     )
 
     process_models(
-        global_model_names, global_meta_prompt_path, [{"Description": composite_description}], iteration_num,
+        global_model_names, global_meta_prompt_path, [{"Description": original_prompt}], iteration_num,
         save_dir, cache_dir, original_negative_prompt, optimized_global_prompts, optimized_negative_global_prompts,
         api_key, global_mode=True
     )
@@ -163,9 +163,17 @@ def initialize_optimized_prompts(model_names):
 
 
 def process_models(
-    model_names, meta_prompt_path, structured_parts, iteration_num,
-    save_dir, cache_dir, original_negative_prompt, optimized_prompts, optimized_negative_prompts,
-    api_key, global_mode=False
+    model_names,
+    meta_prompt_path,
+    structured_parts,
+    iteration_num,
+    save_dir,
+    cache_dir,
+    original_negative_prompt,
+    optimized_prompts,
+    optimized_negative_prompts,
+    api_key,
+    global_mode=False
 ):  
     if iteration_num == 0:
         models = [None for _ in model_names]
@@ -229,7 +237,7 @@ def save_prompts(path, prompts):
 def main():
     args = parse_args()
     run_model_optimization(
-        args.composite_description,
+        args.original_prompt,
         args.part_model_name,
         args.global_model_name,
         args.api_key,
