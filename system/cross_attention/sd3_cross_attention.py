@@ -1,4 +1,5 @@
 
+
 import torch
 import torch.nn as nn
 from diffusers.utils import logging
@@ -22,7 +23,10 @@ import PIL
 import inspect
 import cv2
 from .dense_crf import DenseCRF
+import openai
 
+import re
+from collections import defaultdict
 
 
 attn_maps = dict()
@@ -507,24 +511,21 @@ def save(tokenizer, prompt, max_height=256, max_width=256, save_path='attn_maps'
 
 
 
-def get_attn_maps(prompt,
+def get_attn_maps(prompt: str,
                   tokenizer,
                   tokenizer2=None,
-                  normalize=False,
-                  max_height=256,
-                  max_width=256,
-                  save_path=None,
-                  save_by_timestep=False,
-                  timestep_start=1001,
-                  timestep_end=0,
-                  only_animal_names=False):
+                  normalize: bool = False,
+                  max_height: int = 256,
+                  max_width: int = 256,
+                  save_path:str = None,
+                  save_by_timestep: bool = False,
+                  timestep_start: int = 1001,
+                  timestep_end:int = 0,
+                  animal_part_list = None):
     if save_path:
         if not os.path.exists(save_path):
             os.mkdir(save_path)
     resized_map = None
-    if only_animal_names:
-        with open('2D_experiments/cross_attention/animal_names.txt', 'r') as f:
-            animal_names = f.read().split('\n')
     if save_by_timestep:
         for timestep in tqdm(attn_maps.keys(),total=len(list(attn_maps.keys()))):
             resized_map = None
@@ -552,70 +553,95 @@ def get_attn_maps(prompt,
                 resized_map = resized_map + value if resized_map is not None else value
             max_length = tokenizer.model_max_length
 
-            attn_map_by_token = dict()
+            attn_map_by_token = defaultdict(list)
 
             # match with tokens
             tokens = prompt2tokens(tokenizer, prompt)
             bos_token = tokenizer.bos_token
             eos_token = tokenizer.eos_token
             
-            max_value = torch.max(resized_map[:max_length]).numpy()
-            min_value = torch.min(resized_map[:max_length]).numpy()
+            max_value = torch.max(resized_map[:max_length])
+            min_value = torch.min(resized_map[:max_length])
             for i, token in enumerate(tokens):
-                if only_animal_names and token not in animal_names:
-                    continue
                 if token == bos_token:
                     continue
-                if token == eos_token:
+                elif token == eos_token:
                     break
-                token_attn_map = resized_map[i]
-                # min-max normalization(for visualization purpose)
-                token_attn_map = token_attn_map.numpy()
 
-                if normalize:
-                    normalized_token_attn_map = (token_attn_map - np.min(token_attn_map)) / (np.max(token_attn_map) - np.min(token_attn_map))
+                elif animal_part_list is not None:
+                    for animal_part in animal_part_list:
+                        if token in animal_part.split(" "):
+                            token_attn_map = resized_map[i]
+                            if normalize:
+                                normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+                            else:
+                                normalized_token_attn_map = (token_attn_map - min_value) / (max_value - min_value)
+                            attn_map_by_token[animal_part].append(normalized_token_attn_map)    
                 else:
-                    normalized_token_attn_map = (token_attn_map - min_value) / (max_value - min_value)
+                    token_attn_map = resized_map[i] # (token number, h, w)
+                    # min-max normalization(for visualization purpose)
 
-     
-                attn_map_by_token[token] = normalized_token_attn_map
+
+                    if normalize:
+                        normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+                    else:
+                        normalized_token_attn_map = (token_attn_map - min_value) / (max_value - min_value)
+
+        
+                    attn_map_by_token[token].append(normalized_token_attn_map) # need modification
+                
+            for token, token_attn_map_list in attn_map_by_token.items():
+                token_attn_map_list = torch.stack(token_attn_map_list)
+                token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+                attn_map_by_token[token] = token_attn_map_list.numpy()
                 if save_path:
                     token = token.replace('</w>','')
-                    token = f'{i}_<{token}>.jpg'
-                    vis_token_attn_map = (normalized_token_attn_map * 255).clip(0, 255).astype(np.uint8)
+                    token = f'<{token}>.jpg'
+                    vis_token_attn_map = (token_attn_map_list.numpy() * 255).clip(0, 255).astype(np.uint8)
                     image = Image.fromarray(vis_token_attn_map)
                     image.save(os.path.join(time_save_path, token))
+ 
 
 
             if tokenizer2:
-                attn_map_by_token_2 = dict()
+                attn_map_by_token_2 = defaultdict(list)
                 tokens2 = prompt2tokens(tokenizer2, prompt)
                 bos_token2 = tokenizer2.bos_token
                 eos_token2 = tokenizer2.eos_token
-                max_value_2 = torch.max(resized_map[max_length:]).numpy()
-                min_value_2 = torch.min(resized_map[max_length:]).numpy()
+                max_value_2 = torch.max(resized_map[max_length:])
+                min_value_2 = torch.min(resized_map[max_length:])
                 
                 for i, token in enumerate(tokens2):
-                    if only_animal_names and token not in animal_names:
-                        continue
                     if token == bos_token2:
                         continue
-                    if token == eos_token2:
+                    elif token == eos_token2:
                         break
-                    token_attn_map = resized_map[i + max_length]
-                    # min-max normalization(for visualization purpose)
-                    token_attn_map = token_attn_map.numpy()
-                    if normalize:
-                        normalized_token_attn_map = (token_attn_map - np.min(token_attn_map)) / (np.max(token_attn_map) - np.min(token_attn_map))
-                    
+                    elif animal_part_list is not None:
+                        for animal_part in animal_part_list:
+                            if token in animal_part.split(" "):
+                                token_attn_map = resized_map[i + max_length]
+                                if normalize:
+                                    normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+                                else:
+                                    normalized_token_attn_map = (token_attn_map - min_value_2) / (max_value_2 - min_value_2)
+                                attn_map_by_token_2[animal_part].append(normalized_token_attn_map)    
                     else:
-                        normalized_token_attn_map = (token_attn_map - min_value_2) / (max_value_2 - min_value_2)
-           
-                    attn_map_by_token_2[token] = normalized_token_attn_map
+                        token_attn_map = resized_map[i + max_length]
+                        # min-max normalization(for visualization purpose)
+
+                        if normalize:
+                            normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+                        else:
+                            normalized_token_attn_map = (token_attn_map - min_value_2) / (max_value_2 - min_value_2)
+                        attn_map_by_token_2[token].append(normalized_token_attn_map)
+                for token, token_attn_map_list in attn_map_by_token_2.items():
+                    token_attn_map_list = torch.stack(token_attn_map_list)
+                    token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+                    attn_map_by_token_2[token] = token_attn_map_list.numpy()
                     if save_path:
                         token = token.replace('</w>','')
-                        token = f'{i}_<{token}>_2.jpg'
-                        vis_token_attn_map = (normalized_token_attn_map * 255).clip(0, 255).astype(np.uint8)
+                        token = f'<{token}>_2.jpg'
+                        vis_token_attn_map = (token_attn_map_list.numpy() * 255).clip(0, 255).astype(np.uint8)
                         image = Image.fromarray(vis_token_attn_map)
                         image.save(os.path.join(time_save_path, token))
     
@@ -649,69 +675,89 @@ def get_attn_maps(prompt,
 
     max_length = tokenizer.model_max_length
 
-    attn_map_by_token = dict()
+    attn_map_by_token = defaultdict(list)
 
     # match with tokens
     tokens = prompt2tokens(tokenizer, prompt)
     bos_token = tokenizer.bos_token
     eos_token = tokenizer.eos_token
     
-    max_value = torch.max(resized_map[:max_length]).numpy()
-    min_value = torch.min(resized_map[:max_length]).numpy()
+    max_value = torch.max(resized_map[:max_length])
+    min_value = torch.min(resized_map[:max_length])
     for i, token in enumerate(tokens):
-        if only_animal_names and token not in animal_names:
-            continue
         if token == bos_token:
             continue
-        if token == eos_token:
+        elif token == eos_token:
             break
-        token_attn_map = resized_map[i]
-        # min-max normalization(for visualization purpose)
-        token_attn_map = token_attn_map.numpy()
-
-        if normalize:
-            normalized_token_attn_map = (token_attn_map - np.min(token_attn_map)) / (np.max(token_attn_map) - np.min(token_attn_map))
+        elif animal_part_list is not None:
+            for animal_part in animal_part_list:
+                if token in animal_part.split(" "):
+                    token_attn_map = resized_map[i + max_length]
+                    if normalize:
+                        normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+                    else:
+                        normalized_token_attn_map = (token_attn_map - min_value) / (max_value - min_value)
+                    attn_map_by_token[animal_part].append(normalized_token_attn_map)    
         else:
-            normalized_token_attn_map = (token_attn_map - min_value) / (max_value - min_value)
-
-        attn_map_by_token[token] = normalized_token_attn_map
+            token_attn_map = resized_map[i + max_length]
+            # min-max normalization(for visualization purpose)
+  
+            if normalize:
+                normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+            else:
+                normalized_token_attn_map = (token_attn_map - min_value) / (max_value - min_value)
+            attn_map_by_token[token].append(normalized_token_attn_map)
+    for token, token_attn_map_list in attn_map_by_token.items():
+        token_attn_map_list = torch.stack(token_attn_map_list)
+        token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+        attn_map_by_token[token] = token_attn_map_list.numpy()
         if save_path:
             token = token.replace('</w>','')
-            token = f'{i}_<{token}>.jpg'
-            vis_token_attn_map = (normalized_token_attn_map * 255).clip(0, 255).astype(np.uint8)
+            token = f'<{token}>.jpg'
+            vis_token_attn_map = (token_attn_map_list.numpy() * 255).clip(0, 255).astype(np.uint8)
             image = Image.fromarray(vis_token_attn_map)
             image.save(os.path.join(save_path, token))
 
-
+            
     if tokenizer2:
-        attn_map_by_token_2 = dict()
+        attn_map_by_token_2 = defaultdict(list)
         tokens2 = prompt2tokens(tokenizer2, prompt)
         bos_token2 = tokenizer2.bos_token
         eos_token2 = tokenizer2.eos_token
-        max_value_2 = torch.max(resized_map[max_length:]).numpy()
-        min_value_2 = torch.min(resized_map[max_length:]).numpy()
+        max_value_2 = torch.max(resized_map[max_length:])
+        min_value_2 = torch.min(resized_map[max_length:])
         
         for i, token in enumerate(tokens2):
-            if only_animal_names and token not in animal_names:
-                continue
             if token == bos_token2:
                 continue
-            if token == eos_token2:
+            elif token == eos_token2:
                 break
-            token_attn_map = resized_map[i + max_length]
-            # min-max normalization(for visualization purpose)
-            token_attn_map = token_attn_map.numpy()
-            if normalize:
-                normalized_token_attn_map = (token_attn_map - np.min(token_attn_map)) / (np.max(token_attn_map) - np.min(token_attn_map))
-              
+            elif animal_part_list is not None:
+                for animal_part in animal_part_list:
+                    if token in animal_part.split(" "):
+                        token_attn_map = resized_map[i + max_length]
+                        if normalize:
+                            normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+                        else:
+                            normalized_token_attn_map = (token_attn_map - min_value_2) / (max_value_2 - min_value_2)
+                        attn_map_by_token_2[animal_part].append(normalized_token_attn_map)    
             else:
-                normalized_token_attn_map = (token_attn_map - min_value_2) / (max_value_2 - min_value_2)
-
-            attn_map_by_token_2[token] = normalized_token_attn_map
+                token_attn_map = resized_map[i + max_length]
+                # min-max normalization(for visualization purpose)
+        
+                if normalize:
+                    normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
+                else:
+                    normalized_token_attn_map = (token_attn_map - min_value_2) / (max_value_2 - min_value_2)
+                attn_map_by_token_2[token].append(normalized_token_attn_map)
+        for token, token_attn_map_list in attn_map_by_token_2.items():
+            token_attn_map_list = torch.stack(token_attn_map_list)
+            token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+            attn_map_by_token_2[token] = token_attn_map_list.numpy()
             if save_path:
                 token = token.replace('</w>','')
-                token = f'{i}_<{token}>_2.jpg'
-                vis_token_attn_map = (normalized_token_attn_map * 255).clip(0, 255).astype(np.uint8)
+                token = f'<{token}>_2.jpg'
+                vis_token_attn_map = (token_attn_map_list.numpy() * 255).clip(0, 255).astype(np.uint8)
                 image = Image.fromarray(vis_token_attn_map)
                 image.save(os.path.join(save_path, token))
     if tokenizer2:
@@ -870,12 +916,50 @@ def predict_noise_residual(model,
     return noise_pred
 
 
+def post_process_animal_part_extraction(animal_part):
+    # Regular expression to find contents between double quotes
+    pattern = r'"(.*?)"'
+    # Find all matches
+    animal_part_list = re.findall(pattern, animal_part)
+    return animal_part_list
+
+
+
+def animal_part_extractor(prompt, api_key, max_trial=100):
+    with open('2D_experiments/cross_attention/animal_part_extraction.txt', 'r') as f:
+        animal_part_extraction_prompt = f.read()
+    animal_part_extraction_prompt = animal_part_extraction_prompt.replace("[COMPOSITE DESCRIPTION]", prompt)
+    
+    client = openai.OpenAI(
+    # This is the default and can be omitted
+        api_key=api_key
+    )
+    trial_idx = 0
+    while trial_idx < max_trial:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": animal_part_extraction_prompt,
+                }
+            ],
+            model="gpt-4o",
+        )
+        animal_part = chat_completion.choices[0].message.content
+        animal_part = post_process_animal_part_extraction(animal_part)
+        if len(animal_part) > 0:
+            break
+    if len(animal_part) == 0:
+        raise ValueError("Failed to extract animal parts from the prompt.")
+    return animal_part
+
 
 
 def get_attn_maps_sd3(
     model: StableDiffusion3Pipeline,
     prompt: str, 
     negative_prompt: str, 
+    api_key: str,
     num_images_per_prompt: int = 1, 
     num_inference_steps: int = 50, 
     guidance_scale: float = 7, 
@@ -892,7 +976,8 @@ def get_attn_maps_sd3(
     only_animal_names: bool = False,
     ):
 
-
+    if only_animal_names:
+        animal_part_list = animal_part_extractor(prompt, api_key)
 
 
     height = model.default_sample_size * model.vae_scale_factor
@@ -986,9 +1071,9 @@ def get_attn_maps_sd3(
             stepped_latents = model.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
             if i % interval == 0:
-                image = model.vae.decode(stepped_latents / model.vae.config.scaling_factor, return_dict=False, generator=None)[0]
+                vis_image = model.vae.decode(stepped_latents / model.vae.config.scaling_factor, return_dict=False, generator=None)[0]
                 if save_dir:
-                    display_sample(image, i, save_dir)
+                    display_sample(vis_image, i, save_dir)
 
     if save_dir:
         attn_map_save_dir = os.path.join(save_dir, "attn_map")
@@ -1003,8 +1088,10 @@ def get_attn_maps_sd3(
         timestep_start=timestep_start,
         timestep_end=timestep_end,
         normalize=normalize,
-        only_animal_names=only_animal_names,
+        animal_part_list=animal_part_list if only_animal_names else None
     )
+    if image is None:
+        image = vis_image
     # convert image to numpy array
     image = image.permute(0, 2, 3, 1)
     image = image.cpu().detach().numpy()
@@ -1052,6 +1139,7 @@ def crf_refine(image: np.ndarray,
     stack_coarse_attn_maps = []
     class_names = list(coarse_attn_maps.keys())
     class_names.insert(0, 'background')
+
     for _, coarse_attn_map in coarse_attn_maps.items():
         coarse_attn_map = cv2.resize(coarse_attn_map, (image.shape[2], image.shape[1]))
         if np.max(coarse_attn_map.max()) > 1:
