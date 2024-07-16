@@ -54,10 +54,15 @@ class PartDreamSystem(BaseLift3DSystem):
         # global guidance model names
         use_global_attn: bool = False
         global_model_name: str = "stable-diffusion-3-medium-diffusers"
+        attention_guidance_start_step: int = 4000
+        attention_guidance_interval: int = 100
 
         use_2d_recentering: bool = False
-        visualize: bool = False
         mllm_optimize_prompt: bool = False
+
+
+        visualize: bool = False
+        visualize_save_dir: str = ""
 
 
     cfg: Config
@@ -69,7 +74,8 @@ class PartDreamSystem(BaseLift3DSystem):
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
         part_model_names = self.cfg.guidance_type
         global_model_names = self.cfg.guidance_type
-
+        if not self.cfg.visualize:
+            self.cfg.visualize_save_dir = None
         # use mllm to optimize the prompt
         if self.cfg.mllm_optimize_prompt:
             print("Optimizing the prompt using MLLM")
@@ -112,6 +118,7 @@ class PartDreamSystem(BaseLift3DSystem):
             bi_rgb_std=3,
             bi_w=4,
         )
+        self.attn_map_by_token = None
     
 
     def get_attn_maps_sd3(self,
@@ -128,6 +135,8 @@ class PartDreamSystem(BaseLift3DSystem):
             for idx, image in enumerate(images):
                 # convert image to PIL image
                 image = Image.fromarray((image.cpu().detach().numpy()*255).astype(np.uint8))
+
+          
                 output = get_attn_maps_sd3(model=self.global_model,
                                 prompt=self.cfg.prompt_processor.prompt,
                                 negative_prompt=self.cfg.prompt_processor.negative_prompt,
@@ -135,7 +144,8 @@ class PartDreamSystem(BaseLift3DSystem):
                                 image=image,
                                 timestep_start=999, # hard coded
                                 timestep_end=0, # hard coded
-                                free_style_timestep_start=501)
+                                free_style_timestep_start=501,
+                                save_dir=self.cfg.visualize_save_dir,)
             
                 attn_map_by_token = output['attn_map_by_token']
 
@@ -144,12 +154,14 @@ class PartDreamSystem(BaseLift3DSystem):
 
                     probmaps, _ = crf_refine(image,
                                             attn_map_by_token,
-                                            self.postprocessor)
+                                            self.postprocessor,
+                                            save_dir=self.cfg.visualize_save_dir)
 
 
                     attn_map_by_token = attn_map_postprocess(probmaps,
                                             attn_map_by_token,
-                                            amplification_factor=1.5)
+                                            amplification_factor=1.5,
+                                            save_dir=self.cfg.visualize_save_dir,)
                 
                 attn_map_by_tokens.append(attn_map_by_token)
         
@@ -162,8 +174,11 @@ class PartDreamSystem(BaseLift3DSystem):
     def training_step(self, batch, batch_idx):
         out = self(batch)
         images = out["comp_rgb"] # 4, H, W, 3 multiview images
-    
-        attn_map_by_token = self.get_attn_maps_sd3(images)
+        if batch_idx >= self.cfg.attention_guidance_start_step and \
+            batch_idx % self.cfg.attention_guidance_interval == 0:
+            attn_map_by_token = self.get_attn_maps_sd3(images)
+            self.attn_map_by_token = attn_map_by_token
+
 
         guidance_out = self.guidance(out["comp_rgb"], self.prompt_utils, **batch)
 

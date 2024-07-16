@@ -65,6 +65,11 @@ system:
     # num_samples_per_ray: 512
     num_samples_per_ray: 128
 
+
+  mllm_optimize_prompt: True
+  attention_guidance_start_step: 2500
+  attention_guidance_interval: 10
+
   prompt_processor_type: "stable-diffusion-prompt-processor"
 
 
@@ -115,6 +120,7 @@ system:
 
 
   visualize: True
+  visualize_save_dir: visualization
 
 
 
