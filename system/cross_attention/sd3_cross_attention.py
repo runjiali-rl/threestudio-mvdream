@@ -593,6 +593,8 @@ def get_attn_maps(prompt: str,
             for token, token_attn_map_list in attn_map_by_token.items():
                 token_attn_map_list = torch.stack(token_attn_map_list)
                 token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+                if normalize:
+                    token_attn_map_list = (token_attn_map_list - torch.min(token_attn_map_list)) / (torch.max(token_attn_map_list) - torch.min(token_attn_map_list))
                 attn_map_by_token[token] = token_attn_map_list.numpy()
                 if save_path:
                     token = token.replace('</w>','')
@@ -637,6 +639,8 @@ def get_attn_maps(prompt: str,
                 for token, token_attn_map_list in attn_map_by_token_2.items():
                     token_attn_map_list = torch.stack(token_attn_map_list)
                     token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+                    if normalize:
+                        token_attn_map_list = (token_attn_map_list - torch.min(token_attn_map_list)) / (torch.max(token_attn_map_list) - torch.min(token_attn_map_list))
                     attn_map_by_token_2[token] = token_attn_map_list.numpy()
                     if save_path:
                         token = token.replace('</w>','')
@@ -710,6 +714,8 @@ def get_attn_maps(prompt: str,
     for token, token_attn_map_list in attn_map_by_token.items():
         token_attn_map_list = torch.stack(token_attn_map_list)
         token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+        if normalize:
+            token_attn_map_list = (token_attn_map_list - torch.min(token_attn_map_list)) / (torch.max(token_attn_map_list) - torch.min(token_attn_map_list))
         attn_map_by_token[token] = token_attn_map_list.numpy()
         if save_path:
             token = token.replace('</w>','')
@@ -753,6 +759,8 @@ def get_attn_maps(prompt: str,
         for token, token_attn_map_list in attn_map_by_token_2.items():
             token_attn_map_list = torch.stack(token_attn_map_list)
             token_attn_map_list = torch.mean(token_attn_map_list, axis=0)
+            if normalize:
+                token_attn_map_list = (token_attn_map_list - torch.min(token_attn_map_list)) / (torch.max(token_attn_map_list) - torch.min(token_attn_map_list))
             attn_map_by_token_2[token] = token_attn_map_list.numpy()
             if save_path:
                 token = token.replace('</w>','')
