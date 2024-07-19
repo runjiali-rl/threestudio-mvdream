@@ -56,6 +56,10 @@ class PartDreamSystem(BaseLift3DSystem):
         global_model_name: str = "stable-diffusion-3-medium-diffusers"
         attention_guidance_start_step: int = 4000
         attention_guidance_interval: int = 100
+        attention_guidance_timestep_start:int = 850
+        attention_guidance_timestep_end:int = 400
+        attention_guidance_free_style_timestep_start:int = 500
+        use_crf: bool = False
 
         use_2d_recentering: bool = False
         mllm_optimize_prompt: bool = False
@@ -73,7 +77,7 @@ class PartDreamSystem(BaseLift3DSystem):
 
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
         part_model_names = self.cfg.guidance_type
-        global_model_names = self.cfg.guidance_type
+        global_model_names = self.cfg.guidance_type + "," + self.cfg.global_model_name
         if not self.cfg.visualize:
             self.cfg.visualize_save_dir = None
         # use mllm to optimize the prompt
@@ -93,8 +97,13 @@ class PartDreamSystem(BaseLift3DSystem):
             # update the prompt the optimized prompt
             self.cfg.prompt_processor.prompt = optimzied_global_prompts[self.cfg.guidance_type]['global']
             self.cfg.prompt_processor.negative_prompt = optimized_negative_global_prompts[self.cfg.guidance_type]['global']
+            self.attention_guidance_prompt = optimzied_global_prompts[self.cfg.global_model_name]['global']
+            self.attention_guidance_negative_prompt = optimized_negative_global_prompts[self.cfg.global_model_name]['global']
+
         else:
             self.cfg.prompt_processor.prompt = self.cfg.prompt
+            self.attention_guidance_prompt = self.cfg.prompt
+            self.attention_guidance_negative_prompt = self.cfg.prompt_processor.negative_prompt
 
         self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
             self.cfg.prompt_processor
@@ -135,17 +144,22 @@ class PartDreamSystem(BaseLift3DSystem):
             for idx, image in enumerate(images):
                 # convert image to PIL image
                 image = Image.fromarray((image.cpu().detach().numpy()*255).astype(np.uint8))
+                if self.cfg.visualize:
+                    image.save(os.path.join(self.cfg.visualize_save_dir, f"image_{idx}.png"))
 
           
                 output = get_attn_maps_sd3(model=self.global_model,
-                                prompt=self.cfg.prompt_processor.prompt,
-                                negative_prompt=self.cfg.prompt_processor.negative_prompt,
+                                prompt=self.attention_guidance_prompt,
+                                negative_prompt=self.attention_guidance_negative_prompt,
                                 only_animal_names=True,
                                 image=image,
-                                timestep_start=999, # hard coded
-                                timestep_end=0, # hard coded
-                                free_style_timestep_start=501,
-                                save_dir=self.cfg.visualize_save_dir,)
+                                timestep_start=self.cfg.attention_guidance_timestep_start,
+                                timestep_end=self.cfg.attention_guidance_timestep_end,
+                                free_style_timestep_start=self.cfg.attention_guidance_free_style_timestep_start,
+                                save_by_timestep=True,
+                                save_dir=self.cfg.visualize_save_dir,
+                                api_key=self.cfg.api_key,
+                                normalize=True,)
             
                 attn_map_by_token = output['attn_map_by_token']
 
@@ -176,7 +190,8 @@ class PartDreamSystem(BaseLift3DSystem):
         images = out["comp_rgb"] # 4, H, W, 3 multiview images
         if batch_idx >= self.cfg.attention_guidance_start_step and \
             batch_idx % self.cfg.attention_guidance_interval == 0:
-            attn_map_by_token = self.get_attn_maps_sd3(images)
+            attn_map_by_token = self.get_attn_maps_sd3(images,
+                                                       use_crf=self.cfg.use_crf)
             self.attn_map_by_token = attn_map_by_token
 
 

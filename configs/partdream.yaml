@@ -66,9 +66,15 @@ system:
     num_samples_per_ray: 128
 
 
-  mllm_optimize_prompt: True
-  attention_guidance_start_step: 2500
+  mllm_optimize_prompt: False
+  attention_guidance_start_step: 2000
   attention_guidance_interval: 10
+  attention_guidance_timestep_start: 650
+  attention_guidance_timestep_end: 100
+  attention_guidance_free_style_timestep_start: 900
+  use_crf: True
+
+
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
 

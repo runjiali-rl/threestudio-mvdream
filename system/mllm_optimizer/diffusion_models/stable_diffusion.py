@@ -207,6 +207,7 @@ MODEL_DICT = {
     "deep-floyd-guidance": DeepFloyd,
     "mvdream-multiview-diffusion-guidance": MVDream,
     "partdream-guidance": MVDream,
+    'stabilityai/stable-diffusion-3-medium-diffusers': StableDiffusion3,
 }
 
 class DiffusionModel():
