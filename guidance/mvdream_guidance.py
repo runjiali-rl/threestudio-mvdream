@@ -104,6 +104,8 @@ class PartDreamDiffusionGuidance(BaseObject):
         timestep=None,
         text_embeddings=None,
         input_is_latent=False,
+        mask=None,
+        token_index=None,
         **kwargs,
     ):
         batch_size = rgb.shape[0]
@@ -170,7 +172,12 @@ class PartDreamDiffusionGuidance(BaseObject):
                 }
             else:
                 context = {"context": text_embeddings}
-            noise_pred = self.model.apply_model(latent_model_input, t_expand, context)
+            noise_pred = self.model.apply_model(latent_model_input,
+                                                t_expand,
+                                                context,
+                                                mask=mask,
+                                                token_index=token_index)
+                              
 
         # perform guidance
         noise_pred_text, noise_pred_uncond = noise_pred.chunk(

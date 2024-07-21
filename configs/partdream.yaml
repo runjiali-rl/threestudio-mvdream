@@ -22,7 +22,7 @@ data:
   n_val_views: 4
   eval_camera_distance: 3.0
   eval_fovy_deg: 40.
-  n_times: 3
+  n_times: 1
 
 system_type: "partdream-system"
 system:
@@ -67,8 +67,11 @@ system:
 
 
   mllm_optimize_prompt: False
-  attention_guidance_start_step: 2000
-  attention_guidance_interval: 10
+  
+  use_global_attn: True
+  global_model_name: stabilityai/stable-diffusion-3-medium-diffusers
+  attention_guidance_start_step: 0
+  attention_guidance_interval: 1000
   attention_guidance_timestep_start: 650
   attention_guidance_timestep_end: 100
   attention_guidance_free_style_timestep_start: 900
@@ -117,8 +120,7 @@ system:
     enable_sequential_cpu_offload: True
 
 
-  use_global_attn: True
-  global_model_name: stabilityai/stable-diffusion-3-medium-diffusers
+
 
 
   use_part_expert: False

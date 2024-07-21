@@ -13,8 +13,11 @@ import torch.nn.functional as F
 from threestudio.utils.base import update_end_if_possible
 import cv2
 from .mllm_optimizer import run_model_optimization
-from .cross_attention import get_attn_maps_sd3, DenseCRF, crf_refine, attn_map_postprocess, set_layer_with_name_and_path, register_cross_attention_hook
+from .cross_attention import get_attn_maps_sd3, DenseCRF, crf_refine, attn_map_postprocess, set_forward_sd3, register_cross_attention_hook, set_forward_mvdream, animal_part_extractor, prompt2tokens
 from diffusers import DiffusionPipeline
+from collections import defaultdict
+from transformers import AutoTokenizer
+
 
 
 
@@ -76,6 +79,7 @@ class PartDreamSystem(BaseLift3DSystem):
         super().configure()
 
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
+        set_forward_mvdream(self.guidance.model)
         part_model_names = self.cfg.guidance_type
         global_model_names = self.cfg.guidance_type + "," + self.cfg.global_model_name
         if not self.cfg.visualize:
@@ -87,6 +91,7 @@ class PartDreamSystem(BaseLift3DSystem):
             optimized_negative_global_prompts,
             optimized_part_prompts,
             optimized_negative_part_prompts) = run_model_optimization(original_prompt=self.cfg.prompt,
+                                                    original_negative_prompt="",
                                                     part_model_names=part_model_names,
                                                     global_model_names=global_model_names,
                                                     api_key=self.cfg.api_key,
@@ -99,23 +104,51 @@ class PartDreamSystem(BaseLift3DSystem):
             self.cfg.prompt_processor.negative_prompt = optimized_negative_global_prompts[self.cfg.guidance_type]['global']
             self.attention_guidance_prompt = optimzied_global_prompts[self.cfg.global_model_name]['global']
             self.attention_guidance_negative_prompt = optimized_negative_global_prompts[self.cfg.global_model_name]['global']
+            # TODO: update the part expert prompt
 
         else:
             self.cfg.prompt_processor.prompt = self.cfg.prompt
             self.attention_guidance_prompt = self.cfg.prompt
             self.attention_guidance_negative_prompt = self.cfg.prompt_processor.negative_prompt
 
+        self.part_prompts = animal_part_extractor(self.cfg.prompt, api_key=self.cfg.api_key)
+        self.index_by_part = {}
+
         self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
             self.cfg.prompt_processor
         )
         self.prompt_utils = self.prompt_processor()
+        self.guidance_tokenizer = AutoTokenizer.from_pretrained(self.cfg.prompt_processor.pretrained_model_name_or_path, subfolder="tokenizer")
+        self.part_token_index_list = []
+        for part_prompt in self.part_prompts:
+            token_index_list = self.get_token_index(self.guidance_tokenizer, self.cfg.prompt_processor.prompt, part_prompt)
+            self.part_token_index_list.append(token_index_list)
+
+
+        stop = 1
+
+        # self.part_prompt_processor_list = []
+
+        # for prompt in self.part_prompts:
+        #     self.cfg.prompt_processor.prompt = prompt + ", 3D asset" # follow the mvdream preprocessing
+        #     self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
+        #         self.cfg.prompt_processor
+        #     )
+        #     self.part_prompt_processor_list.append(self.prompt_processor)
+        # self.part_prompt_utils_list = []
+        # for prompt_processor in self.part_prompt_processor_list:
+        #     prompt_processor = prompt_processor()
+        #     self.part_prompt_utils_list.append(prompt_processor)
+
+
+
 
         # initialize the global guidance model
         self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
                                                         use_safetensors=True,
                                                         torch_dtype=torch.float16,
                                                         cache_dir=self.cfg.cache_dir)
-        set_layer_with_name_and_path(self.global_model.transformer)
+        set_forward_sd3(self.global_model.transformer)
         register_cross_attention_hook(self.global_model.transformer)
         self.global_model = self.global_model.to("cuda")
         self.global_model.enable_model_cpu_offload()
@@ -129,18 +162,105 @@ class PartDreamSystem(BaseLift3DSystem):
         )
         self.attn_map_by_token = None
     
+    def get_mean_variance(self,
+                          heatmap: torch.Tensor):
+        """
+        Get the mean and variance of the heatmap
+        args:
+        heatmap: torch.Tensor, shape (H, W)
+        
+        return:
+        mean: torch.Tensor, shape (2,)
+        variance: torch.Tensor, shape (2,)
+        """
+        heatmap_flat = heatmap.flatten()
+        resolution = heatmap.shape[-1]
+        # Normalize the heatmap so the sum of all elements equals 1
+        heatmap_normalized = heatmap_flat / torch.sum(heatmap_flat)
+
+        # Create coordinate grids
+        H, W = heatmap.shape
+        x_coords, y_coords = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+        x_coords = x_coords.flatten().float().to(heatmap.device)
+        y_coords = y_coords.flatten().float().to(heatmap.device)
+
+        # Calculate the first moment (mean) for x and y
+        mean_x = torch.sum(x_coords * heatmap_normalized)
+        mean_y = torch.sum(y_coords * heatmap_normalized)
+        mean_x = (mean_x - resolution/2) / (resolution/2)
+        mean_y = (mean_y - resolution/2) / (resolution/2)
+
+
+        # Stack means into a single tensor for convenience
+        mean = torch.tensor([mean_x, mean_y])
+
+        # Calculate the second moment (variance)
+        variance_x = torch.sum(((x_coords - mean_x) ** 2) * heatmap_normalized)
+        variance_y = torch.sum(((y_coords - mean_y) ** 2) * heatmap_normalized)
+        variance_x = variance_x / ((resolution/2)**2)
+        variance_y = variance_y / ((resolution/2)**2)
+
+        # Stack variances into a single tensor for convenience
+        variance = torch.tensor([variance_x, variance_y])
+        
+
+        return mean, variance
+
+
+    def get_token_index(self,
+                        tokenizer,
+                        prompt:str,
+                        sub_prompt:str):
+        """
+        Get the token index of the sub_prompt in the prompt
+        args:
+        tokenizer: the tokenizer
+        prompt: str, the prompt
+        sub_prompt: str, the sub_prompt
+
+        return:
+        token_index_list: List[int], the list of token index
+        """
+        tokens = prompt2tokens(tokenizer, prompt)
+        sub_tokens = prompt2tokens(tokenizer, sub_prompt)
+        bos_token = tokenizer.bos_token
+        eos_token = tokenizer.eos_token
+        pad_token = tokenizer.pad_token
+        token_index_list = []
+        for idx, token in enumerate(tokens):
+            if token == eos_token:
+                break
+            if token in [bos_token, pad_token]:
+                continue
+            if token in sub_tokens:
+                token_index_list.append(idx)
+        return token_index_list
+    
+                        
 
     def get_attn_maps_sd3(self,
                           images,
                           use_crf:bool = False):
         """
         Get the attention maps from the global guidance model
+        args:
+
+        images: torch.Tensor, shape (B, H, W, 3)
+        use_crf: bool, whether to use crf to refine the attention maps
+
+        return:
+        attn_map_by_tokens: Dict[str, torch.Tensor], shape (B, num_tokens, H, W)
         """
         
         with torch.no_grad():
          # if the global model is half precision, convert the image to half precision
             images = images.to(self.global_model.dtype)
-            attn_map_by_tokens = []
+            attn_map_by_tokens = defaultdict(list)
+            file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
+            save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
+            if os.path.exists(save_path):
+                attn_map_by_tokens = torch.load(save_path)
+                return attn_map_by_tokens
             for idx, image in enumerate(images):
                 # convert image to PIL image
                 image = Image.fromarray((image.cpu().detach().numpy()*255).astype(np.uint8))
@@ -150,8 +270,9 @@ class PartDreamSystem(BaseLift3DSystem):
           
                 output = get_attn_maps_sd3(model=self.global_model,
                                 prompt=self.attention_guidance_prompt,
-                                negative_prompt=self.attention_guidance_negative_prompt,
+                                negative_prompt=None,
                                 only_animal_names=True,
+                                animal_names=self.part_prompts,
                                 image=image,
                                 timestep_start=self.cfg.attention_guidance_timestep_start,
                                 timestep_end=self.cfg.attention_guidance_timestep_end,
@@ -162,11 +283,10 @@ class PartDreamSystem(BaseLift3DSystem):
                                 normalize=True,)
             
                 attn_map_by_token = output['attn_map_by_token']
-
                 if use_crf:
-                    image = output['image']
+                    diffused_image = output['diffused_image']
 
-                    probmaps, _ = crf_refine(image,
+                    probmaps, _ = crf_refine(diffused_image,
                                             attn_map_by_token,
                                             self.postprocessor,
                                             save_dir=self.cfg.visualize_save_dir)
@@ -174,13 +294,192 @@ class PartDreamSystem(BaseLift3DSystem):
 
                     attn_map_by_token = attn_map_postprocess(probmaps,
                                             attn_map_by_token,
-                                            amplification_factor=1.5,
+                                            amplification_factor=1.4,
                                             save_dir=self.cfg.visualize_save_dir,)
                 
-                attn_map_by_tokens.append(attn_map_by_token)
-        
+                for key, value in attn_map_by_token.items():
+                    value = torch.tensor(value)
+                    scale = torch.sum(torch.ones_like(value)) / torch.sum(value)
+                    value = value * scale
+                    attn_map_by_tokens[key].append(value)
+            for key, value in attn_map_by_tokens.items():
+                attn_map_by_tokens[key] = torch.stack(value).to(images.device)
+            # process the attention maps
+            torch.save(attn_map_by_tokens, save_path)
+
             return attn_map_by_tokens
 
+    def get_mean_variance_from_attn_map(self,
+                                        attn_map_by_token: Dict[str, torch.Tensor]):
+        """
+        Get the mean and variance from the attention map
+        args:
+        attn_map_by_token: Dict[str, torch.Tensor], the attention map by token
+        """
+        mean_by_token = defaultdict(list)
+        variance_by_token = defaultdict(list)
+        for key, value in attn_map_by_token.items():
+            for view_idx in range(value.shape[0]):
+                attn_map = value[view_idx]
+                mean, variance = self.get_mean_variance(attn_map)
+                mean_by_token[key].append(mean)
+                variance_by_token[key].append(variance)
+        
+        return mean_by_token, variance_by_token
+                
+
+    def create_3D_gaussian(self,
+                            mean_by_token: Dict[str, torch.Tensor],
+                            variance_by_token: Dict[str, torch.Tensor],
+                            resolution: int = 64):
+        """
+        create the 3D gaussian for the part, return the mean and covariance matrix
+        args:
+        mean_by_token: Dict[str, torch.Tensor], the mean by token, shape (B, 4, 2)
+        variance_by_token: Dict[str, torch.Tensor], the variance by token shape (B, 4, 2)
+
+        return:
+        mean_3d_by_token: Dict[str, torch.Tensor], the mean in 3D space, shape (B, 3)
+        covariance_3d_by_token: Dict[str, torch.Tensor], the covariance in 3D space, shape (B, 3, 3)
+        """
+        mean_3d_by_token = {}
+        covariance_3d_by_token = {}
+        for token, means in mean_by_token.items():
+            x_mean, y_mean, z_mean = [], [], []
+            x_var, y_var, z_var = [], [], []
+            variances = variance_by_token[token]
+            for idx, (mean, variance) in enumerate(zip(means, variances)):
+                if idx == 0:
+                    x_mean.append(mean[1])
+                    x_var.append(variance[1])
+                elif idx == 1:
+                    y_mean.append(mean[1])
+                    y_var.append(variance[1])
+                elif idx == 2:
+                    # looking from the back
+                    x_mean.append(- mean[1])
+                    x_var.append(variance[1])
+                elif idx == 3:
+                    y_mean.append(- mean[1])
+                    y_var.append(variance[1])
+                z_mean.append(mean[0])
+                z_var.append(variance[0])
+            x_mean = torch.mean(torch.stack(x_mean))
+            y_mean = torch.mean(torch.stack(y_mean))
+            z_mean = torch.mean(torch.stack(z_mean))
+
+            x_var = torch.mean(torch.stack(x_var))
+            y_var = torch.mean(torch.stack(y_var))
+            z_var = torch.mean(torch.stack(z_var))
+
+            mean_3d = torch.tensor([x_mean, y_mean, z_mean])
+            covariance_3d = torch.diag(torch.tensor([x_var, y_var, z_var]))
+            mean_3d_by_token[token] = mean_3d
+            covariance_3d_by_token[token] = covariance_3d
+        return mean_3d_by_token, covariance_3d_by_token
+
+    def create_3D_gaussian_from_attn_map(self,
+                                        attn_map_by_token: Dict[str, torch.Tensor]):
+        """
+        Create the 3D gaussian from the attention map
+        args:
+        attn_map_by_token: Dict[str, torch.Tensor], the attention map by token
+        
+        return:
+        mean: torch.Tensor, shape (N, 3)
+        covariance: torch.Tensor, shape (N, 3, 3)
+        """
+
+        resolution = attn_map_by_token[list(attn_map_by_token.keys())[0]].shape[-1]
+        mean_by_token, variance_by_token = self.get_mean_variance_from_attn_map(attn_map_by_token)
+        mean_3d_by_token, covariance_3d_by_token = self.create_3D_gaussian(mean_by_token, variance_by_token, resolution)
+        return mean_3d_by_token, covariance_3d_by_token
+
+    def render_gaussian(self,
+                    batch: Dict[str, Any],
+                    means: torch.Tensor, # N, 3 
+                    vars: torch.Tensor, # N, 3
+                    ) -> Dict[str, Any]:
+        means = means*2 # hard coded should fix the create boundary function
+        c2w = batch["c2w"] # B, 4, 4
+        fovy = batch["fovy"] # B
+        H, W = batch["height"], batch["width"] # B
+        horizontal_angles = batch["azimuth"] # B
+        #convert degree to radian
+        horizontal_angles = horizontal_angles * torch.pi / 180
+
+        focal_length: Float[Tensor, "B"] = 0.5 * H / torch.tan(0.5 * fovy)
+
+        w2c: Float[Tensor, "B 4 4"] = torch.zeros(c2w.shape[0], 4, 4).to(c2w)
+        w2c[:, :3, :3] = c2w[:, :3, :3].permute(0, 2, 1)
+        w2c[:, :3, 3:] = -c2w[:, :3, :3].permute(0, 2, 1) @ c2w[:, :3, 3:]
+        w2c[:, 3, 3] = 1.0
+        # get the mean position in the camera coordinate
+        means = means - self.global_mean_shift.to(means.device).unsqueeze(0)
+        means = torch.cat([means, torch.tensor([1.0]).to(means.device).unsqueeze(0).repeat(means.shape[0], 1)], dim=-1) # N, 4
+   
+        camera_means = []
+        for mean in means:
+            mean = mean.unsqueeze(0).repeat(w2c.shape[0], 1) # B, 4
+            camera_mean = torch.bmm(w2c, mean.unsqueeze(-1)).squeeze(-1)
+            camera_means.append(camera_mean)
+        camera_means = torch.stack(camera_means) # N, B, 4
+
+        # render mean position on the image
+        camera_means = camera_means[:, :, :3] # N, B, 3
+
+        projected_means = camera_means[:, :, :2] / camera_means[:, :, 2].unsqueeze(-1) # N, B, 2
+        projected_means[:, :, 0] = projected_means[:, :, 0] * -1
+        projected_means = focal_length.unsqueeze(-1) * projected_means + torch.tensor([W//2, H//2]).to(projected_means.device).unsqueeze(0)
+        projected_means = torch.round(projected_means) # N, B, 2
+
+        projected_vars = vars[:, None, :] / torch.abs(camera_means[:, :, 2])[:, :, None] # N, 1, 3 / N, B, 1 => N, B, 3
+        projected_vars = projected_vars * focal_length[None, :, None] # N, B, 3
+
+        #adjust the variance based the angle
+        projected_vars[:, :, 0] = projected_vars[:, :, 0] * torch.abs(torch.sin(horizontal_angles)).unsqueeze(0)
+        projected_vars[:, :, 1] = projected_vars[:, :, 1] * torch.abs(torch.cos(horizontal_angles)).unsqueeze(0)
+
+        adjusted_vars = []
+        adjusted_horizontal_var = torch.max(projected_vars[:, :, :2], dim=-1)[0]
+        adjusted_vars.append(adjusted_horizontal_var)
+        adjusted_vars.append(projected_vars[:, :, 2])
+        adjusted_vars = torch.stack(adjusted_vars, dim=-1) # N, B, 2
+
+
+        return projected_means, adjusted_vars
+    
+
+    def create_projected_gaussian(self,
+                                batch,
+                                attn_map_by_token: Dict[str, torch.Tensor]):
+        """
+        Create the projected gaussian
+        args:
+        batch: Dict[str, Any], the batch
+        attn_map_by_token: Dict[str, torch.Tensor], the attention map by token
+
+        return:
+        projected_means: Dict[str, torch.Tensor], shape (N, B, 2)
+        projected_vars: Dict[str, torch.Tensor], shape (N, B, 2)
+        """
+
+        mean_by_token, variance_by_token = self.create_3D_gaussian_from_attn_map(attn_map_by_token)
+        projected_means = {}
+        projected_vars = {}
+
+        for token, means in mean_by_token.items():
+            projected_mean, projected_var = self.render_gaussian(batch, means, variance_by_token[token])
+            projected_means[token] = projected_mean
+            projected_vars[token] = projected_var
+        
+        return projected_means, projected_vars
+
+
+
+
+                
+        raise NotImplementedError
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         return self.renderer(**batch)
@@ -189,13 +488,31 @@ class PartDreamSystem(BaseLift3DSystem):
         out = self(batch)
         images = out["comp_rgb"] # 4, H, W, 3 multiview images
         if batch_idx >= self.cfg.attention_guidance_start_step and \
-            batch_idx % self.cfg.attention_guidance_interval == 0:
-            attn_map_by_token = self.get_attn_maps_sd3(images,
-                                                       use_crf=self.cfg.use_crf)
+            batch_idx % self.cfg.attention_guidance_interval == 0 and self.cfg.use_global_attn:
+            attn_map_iter_idx = 0
+            while attn_map_iter_idx < 100:
+                attn_map_by_token = self.get_attn_maps_sd3(images,
+                                                        use_crf=self.cfg.use_crf)
+                # make sure the keys are the same
+                if list(attn_map_by_token.keys()) == self.part_prompts:
+                    break
+
+            assert len(list(attn_map_by_token.keys())) == len(self.part_prompts), \
+                "The number of attention maps should be the same as the number of part prompts."
             self.attn_map_by_token = attn_map_by_token
+        
+        if self.attn_map_by_token is not None:
+            mean_3d_by_token, covariance_3d_by_token = self.create_3D_gaussian_from_attn_map(self.attn_map_by_token)
+            mean_3d_by_token = {key: value.to(images.device) for key, value in mean_3d_by_token.items()}
+            covariance_3d_by_token = {key: value.to(images.device) for key, value in covariance_3d_by_token.items()}
 
+        
+        guidance_out = self.guidance(out["comp_rgb"],
+                                     self.prompt_utils,
+                                     mask = self.attn_map_by_token,
+                                     token_index = self.part_token_index_list,
+                                     **batch)
 
-        guidance_out = self.guidance(out["comp_rgb"], self.prompt_utils, **batch)
 
         loss = 0.0
 

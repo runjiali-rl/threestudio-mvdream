@@ -1,0 +1,8 @@
+{
+    "partdream-guidance": {
+        "global": "A mythical creature with the body of a human and the head of a cat, seamlessly blending these features to create a striking chimera-like appearance, with detailed human anatomy supporting the feline head."
+    },
+    "stabilityai/stable-diffusion-3-medium-diffusers": {
+        "global": "A mythical chimera creature with a human-like body and the head of a domesticated feline, exhibiting an eerie and enigmatic presence."
+    }
+}

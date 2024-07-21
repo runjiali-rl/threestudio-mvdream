@@ -101,6 +101,7 @@ def parse_composite_creature_description(description: str) -> dict:
 
 def run_model_optimization(
     original_prompt: str,
+    original_negative_prompt: str,
     part_model_names: str,
     global_model_names: str,
     api_key: str,
@@ -125,14 +126,6 @@ def run_model_optimization(
     
     part_model_names = part_model_names.split(",")
     global_model_names = global_model_names.split(",")
-
-    original_negative_prompt = (
-        "hollow space, gaps, ugly, bad anatomy, blurry, pixelated, obscure, "
-        "unnatural colors, poor lighting, dull, unclear, cropped, lowres, low quality, "
-        "artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, "
-        "bad proportions, uneven, uneven surface, stripes, disconnected, cartoon"
-    )
-
 
 
     optimized_part_prompts, optimized_negative_part_prompts = initialize_optimized_prompts(part_model_names)

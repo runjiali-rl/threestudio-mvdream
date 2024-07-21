@@ -1,0 +1,8 @@
+{
+    "partdream-guidance": {
+        "global": "Normal animals, regular humans, cartoonish features, human head, abstract forms, cat body."
+    },
+    "stabilityai/stable-diffusion-3-medium-diffusers": {
+        "global": "Normal human, normal feline, other animal body parts, non-mythical creatures, abstract art, dragon features, lion body, quadruped features."
+    }
+}

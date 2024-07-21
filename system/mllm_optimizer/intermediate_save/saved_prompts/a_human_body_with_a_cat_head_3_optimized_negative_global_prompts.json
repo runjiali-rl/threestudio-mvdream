@@ -1,8 +1,0 @@
-{
-    "partdream-guidance": {
-        "global": "hollow space, gaps, ugly, bad anatomy, blurry, pixelated, obscure, unnatural colors, poor lighting, dull, unclear, cropped, low resolution, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon."
-    },
-    "stabilityai/stable-diffusion-3-medium-diffusers": {
-        "global": "hollow space, gaps, ugly, bad anatomy, blurry, pixelated, obscure, unnatural colors, poor lighting, dull, unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, uneven, uneven surface, stripes, disconnected, cartoon."
-    }
-}

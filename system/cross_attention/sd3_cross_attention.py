@@ -324,7 +324,7 @@ def JointTranformerForward(
 
 
 
-def set_layer_with_name_and_path(model, target_name="attn2", current_path=""):
+def set_forward_sd3(model, current_path=""):
     if model.__class__.__name__ == 'SD3Transformer2DModel':
         # Replace the forward method of the transformer
         if hasattr(model, 'forward'):
@@ -345,11 +345,8 @@ def set_layer_with_name_and_path(model, target_name="attn2", current_path=""):
                 print(f"Replaced processor in layer: {current_path + '.' + name if current_path else name}")
  
 
-
- 
-
         new_path = current_path + '.' + name if current_path else name
-        set_layer_with_name_and_path(layer, target_name, new_path)
+        set_forward_sd3(layer, new_path)
 
 
 
@@ -992,15 +989,26 @@ def animal_part_extractor(prompt, api_key, max_trial=100):
             ],
             model="gpt-4o",
         )
-        animal_part = chat_completion.choices[0].message.content
-        animal_part = post_process_animal_part_extraction(animal_part)
-        if len(animal_part) > 0:
+        animal_parts = chat_completion.choices[0].message.content
+        animal_part_list = post_process_animal_part_extraction(animal_parts)
+        if len(animal_part_list) > 0 and check_animal_part(animal_part_list, prompt):
             break
-    if len(animal_part) == 0:
+
+
+
+    if len(animal_part_list) == 0 or not check_animal_part(animal_part_list, prompt):
         raise ValueError("Failed to extract animal parts from the prompt.")
-    return animal_part
+    return animal_part_list
 
 
+
+def check_animal_part(animal_part_list, prompt):
+    for animal_part in animal_part_list:
+        for token in prompt.split(" "):
+            if token in animal_part:
+                return True
+    
+    return False
 
 def get_attn_maps_sd3(
     model: StableDiffusion3Pipeline,
@@ -1022,10 +1030,15 @@ def get_attn_maps_sd3(
     timestep_end: Optional[int] = 0,
     free_style_timestep_start: Optional[int] = 501,
     only_animal_names: bool = False,
+    animal_names: List[str] = None,
     ):
-
     if only_animal_names:
-        animal_part_list = animal_part_extractor(prompt, api_key)
+        if animal_names is None:
+            animal_part_list = animal_part_extractor(prompt, api_key)
+        else:
+            assert isinstance(animal_names, list), \
+                "animal_names must be a list of strings."
+            animal_part_list = animal_names
 
 
     height = model.default_sample_size * model.vae_scale_factor
@@ -1149,9 +1162,17 @@ def get_attn_maps_sd3(
     # change rgb to bgr
     image = image_processed[..., ::-1]
 
+    vis_image = vis_image.permute(0, 2, 3, 1)
+    vis_image = vis_image.cpu().detach().numpy()
+    vis_image_processed = (vis_image * 255).clip(0, 255)
+    diffused_image = vis_image_processed.astype(np.uint8)
+
+
+
     output = {
         "attn_map_by_token": attn_map_by_token,
         "image": image,
+        "diffused_image": diffused_image
     }
 
     return output
@@ -1175,7 +1196,7 @@ def crf_refine(image: np.ndarray,
     if len(image.shape) == 4:
         image = image[0]
     # resize the image to height and width
-    image = cv2.resize(image, (width, height))
+    image = cv2.resize(image, (width, height)).astype(np.float32)
 
     mean_bgr = (104.008, 116.669, 122.675)
     # image = cv2.imread(image_path, cv2.IMREAD_COLOR).astype(np.float32)
