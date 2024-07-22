@@ -251,7 +251,7 @@ class PartDreamSystem(BaseLift3DSystem):
         
         with torch.no_grad():
          # if the global model is half precision, convert the image to half precision
-    
+            view_suffix = ["back view", "side view", "front view", "side view"]
             attn_map_by_tokens = defaultdict(list)
             file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
             save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
@@ -269,9 +269,10 @@ class PartDreamSystem(BaseLift3DSystem):
                     if self.cfg.visualize:
                         image.save(os.path.join(self.cfg.visualize_save_dir, f"image_{idx}.png"))
 
-          
+                suffix = view_suffix[idx]
+                prompt = self.attention_guidance_prompt + ", " + suffix
                 output = get_attn_maps_sd3(model=self.global_model,
-                                prompt=self.attention_guidance_prompt,
+                                prompt=prompt,
                                 negative_prompt=None,
                                 only_animal_names=True,
                                 animal_names=self.part_prompts,
@@ -621,11 +622,12 @@ class PartDreamSystem(BaseLift3DSystem):
                                      self.prompt_utils,
                                      **batch)
         # get the global attention map
-        if self.cfg.use_global_attn and batch_idx % self.cfg.attention_guidance_interval == 0 \
-            and self.true_global_step > self.cfg.attention_guidance_start_step:
+        if self.cfg.use_global_attn and \
+            (batch_idx % self.cfg.attention_guidance_interval == 0 or batch_idx == self.cfg.attention_guidance_start_step)\
+            and self.true_global_step >= self.cfg.attention_guidance_start_step:
             attn_map_iter_idx = 0
             while attn_map_iter_idx < 100:
-                attn_map_by_token = self.get_attn_maps_sd3(images=None,
+                attn_map_by_token = self.get_attn_maps_sd3(images=out["comp_rgb"],
                                                         use_crf=self.cfg.use_crf)
                 # make sure the keys are the same
                 if list(attn_map_by_token.keys()) == self.part_prompts:

@@ -70,11 +70,11 @@ system:
   
   use_global_attn: True
   global_model_name: stabilityai/stable-diffusion-3-medium-diffusers
-  attention_guidance_start_step: 1000
+  attention_guidance_start_step: 500
   attention_guidance_interval: 2000
   attention_guidance_timestep_start: 650
   attention_guidance_timestep_end: 100
-  attention_guidance_free_style_timestep_start: 900
+  attention_guidance_free_style_timestep_start: 800
   use_crf: True
 
   part_loss_scale: 0.5
