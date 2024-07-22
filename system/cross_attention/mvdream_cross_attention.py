@@ -147,10 +147,12 @@ def attention(query, key, value, attn_mask=None, token_index=None, p=0.0):
     attn = query @ key.transpose(-2, -1) # [b*f*h, T, T']
 
     if attn_mask is not None:
-        for idx, attn_mask_ in enumerate(attn_mask):
-            token_indexes_ = token_index[idx]
-            for token_index_ in token_indexes_:
-                attn[:, :, token_index_] = attn[:,  :, token_index_] * attn_mask_.to(attn.device).to(attn.dtype)
+        attn = attn * attn_mask
+        stop = 1
+        # for idx, attn_mask_ in enumerate(attn_mask):
+        #     token_indexes_ = token_index[idx]
+        #     for token_index_ in token_indexes_:
+        #         attn[:, :, token_index_] = attn[:,  :, token_index_] * attn_mask_.to(attn.device).to(attn.dtype)
     attn = attn.softmax(-1)
     attn = F.dropout(attn, p)
     attn = attn @ value
@@ -188,14 +190,22 @@ def MemoryEfficientCrossAttentionForward(self, x, context=None, mask=None, token
   
         if has_context: # cross attention
             input_resolution = torch.sqrt(torch.tensor(x.shape[1])).int()
-            mask_list = []
-            for key_idx, key in enumerate(mask.keys()):
-                single_mask = interpolate(mask[key].unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
-                single_mask = single_mask.view(mask[key].shape[0], -1) # [f, n, n] -> [f, n*n]
-                f = single_mask.shape[0]
-            # reshape mask to [f, T] -> [b*f*h, T] -> [b*f*h, T, 1]
-                mask_list.append(single_mask.repeat(int(self.heads*b/f), 1))
-            out = attention(q, k, v, attn_mask=mask_list, token_index=token_index)
+            # mask_list = []
+            # if isinstance(mask, dict):
+            #     for key_idx, key in enumerate(mask.keys()):
+            #         single_mask = interpolate(mask[key].unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+            #         single_mask = single_mask.view(mask[key].shape[0], -1) # [f, n, n] -> [f, n*n]
+            #         f = single_mask.shape[0]
+            #     # reshape mask to [f, T] -> [b*f*h, T] -> [b*f*h, T, 1]
+            #         mask_list.append(single_mask.repeat(int(self.heads*b/f), 1))
+        
+            f = mask.shape[0]
+            mask = interpolate(mask.unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+            mask = mask.view(mask.shape[0], -1) # [f, n, n] -> [f, n*n]
+            # reshape mask to [f*T] -> [b*h, f*T] -> [b*h, f*T, 1]
+            mask = mask.repeat(int(self.heads*x.shape[0]/f), 1)
+            mask = mask.unsqueeze(2)
+            out = attention(q, k, v, attn_mask=mask, token_index=token_index)
         else: # self attention
             raise NotImplementedError
             # f = mask.shape[0]

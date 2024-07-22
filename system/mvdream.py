@@ -63,6 +63,7 @@ class PartDreamSystem(BaseLift3DSystem):
         attention_guidance_timestep_end:int = 400
         attention_guidance_free_style_timestep_start:int = 500
         use_crf: bool = False
+        part_loss_scale: float = 0.1
 
         use_2d_recentering: bool = False
         mllm_optimize_prompt: bool = False
@@ -82,8 +83,6 @@ class PartDreamSystem(BaseLift3DSystem):
         set_forward_mvdream(self.guidance.model)
         part_model_names = self.cfg.guidance_type
         global_model_names = self.cfg.guidance_type + "," + self.cfg.global_model_name
-        if not self.cfg.visualize:
-            self.cfg.visualize_save_dir = None
         # use mllm to optimize the prompt
         if self.cfg.mllm_optimize_prompt:
             print("Optimizing the prompt using MLLM")
@@ -120,25 +119,18 @@ class PartDreamSystem(BaseLift3DSystem):
         self.prompt_utils = self.prompt_processor()
         self.guidance_tokenizer = AutoTokenizer.from_pretrained(self.cfg.prompt_processor.pretrained_model_name_or_path, subfolder="tokenizer")
         self.part_token_index_list = []
-        for part_prompt in self.part_prompts:
-            token_index_list = self.get_token_index(self.guidance_tokenizer, self.cfg.prompt_processor.prompt, part_prompt)
-            self.part_token_index_list.append(token_index_list)
+        # for part_prompt in self.part_prompts:
+        #     token_index_list = self.get_token_index(self.guidance_tokenizer, self.cfg.prompt_processor.prompt, part_prompt)
+        #     self.part_token_index_list.append(token_index_list)
 
-
-        stop = 1
-
-        # self.part_prompt_processor_list = []
-
-        # for prompt in self.part_prompts:
-        #     self.cfg.prompt_processor.prompt = prompt + ", 3D asset" # follow the mvdream preprocessing
-        #     self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
-        #         self.cfg.prompt_processor
-        #     )
-        #     self.part_prompt_processor_list.append(self.prompt_processor)
-        # self.part_prompt_utils_list = []
-        # for prompt_processor in self.part_prompt_processor_list:
-        #     prompt_processor = prompt_processor()
-        #     self.part_prompt_utils_list.append(prompt_processor)
+        self.part_prompt_utils_list = []
+        for prompt in self.part_prompts:
+            self.cfg.prompt_processor.prompt = prompt + ", 3D asset" # follow the mvdream preprocessing
+            prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
+                self.cfg.prompt_processor
+            )
+            prompt_processor = prompt_processor()
+            self.part_prompt_utils_list.append(prompt_processor)
 
 
 
@@ -161,6 +153,10 @@ class PartDreamSystem(BaseLift3DSystem):
             bi_w=4,
         )
         self.attn_map_by_token = None
+
+
+        
+
     
     def get_mean_variance(self,
                           heatmap: torch.Tensor):
@@ -239,8 +235,9 @@ class PartDreamSystem(BaseLift3DSystem):
                         
 
     def get_attn_maps_sd3(self,
-                          images,
-                          use_crf:bool = False):
+                          images=None,
+                          use_crf:bool = False,
+                          device="cuda"):
         """
         Get the attention maps from the global guidance model
         args:
@@ -254,18 +251,23 @@ class PartDreamSystem(BaseLift3DSystem):
         
         with torch.no_grad():
          # if the global model is half precision, convert the image to half precision
-            images = images.to(self.global_model.dtype)
+    
             attn_map_by_tokens = defaultdict(list)
             file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
             save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
             if os.path.exists(save_path):
                 attn_map_by_tokens = torch.load(save_path)
                 return attn_map_by_tokens
+            if images is not None:
+                images = images.to(self.global_model.dtype)
+            else:
+                images = [None] * 4
             for idx, image in enumerate(images):
                 # convert image to PIL image
-                image = Image.fromarray((image.cpu().detach().numpy()*255).astype(np.uint8))
-                if self.cfg.visualize:
-                    image.save(os.path.join(self.cfg.visualize_save_dir, f"image_{idx}.png"))
+                if image is not None:
+                    image = Image.fromarray((image.cpu().detach().numpy()*255).astype(np.uint8))
+                    if self.cfg.visualize:
+                        image.save(os.path.join(self.cfg.visualize_save_dir, f"image_{idx}.png"))
 
           
                 output = get_attn_maps_sd3(model=self.global_model,
@@ -294,7 +296,7 @@ class PartDreamSystem(BaseLift3DSystem):
 
                     attn_map_by_token = attn_map_postprocess(probmaps,
                                             attn_map_by_token,
-                                            amplification_factor=1.4,
+                                            amplification_factor=2,
                                             save_dir=self.cfg.visualize_save_dir,)
                 
                 for key, value in attn_map_by_token.items():
@@ -303,7 +305,7 @@ class PartDreamSystem(BaseLift3DSystem):
                     value = value * scale
                     attn_map_by_tokens[key].append(value)
             for key, value in attn_map_by_tokens.items():
-                attn_map_by_tokens[key] = torch.stack(value).to(images.device)
+                attn_map_by_tokens[key] = torch.stack(value).to(device)
             # process the attention maps
             torch.save(attn_map_by_tokens, save_path)
 
@@ -330,8 +332,7 @@ class PartDreamSystem(BaseLift3DSystem):
 
     def create_3D_gaussian(self,
                             mean_by_token: Dict[str, torch.Tensor],
-                            variance_by_token: Dict[str, torch.Tensor],
-                            resolution: int = 64):
+                            variance_by_token: Dict[str, torch.Tensor]):
         """
         create the 3D gaussian for the part, return the mean and covariance matrix
         args:
@@ -340,7 +341,7 @@ class PartDreamSystem(BaseLift3DSystem):
 
         return:
         mean_3d_by_token: Dict[str, torch.Tensor], the mean in 3D space, shape (B, 3)
-        covariance_3d_by_token: Dict[str, torch.Tensor], the covariance in 3D space, shape (B, 3, 3)
+        covariance_3d_by_token: Dict[str, torch.Tensor], the variance in 3D space, shape (B, 3)
         """
         mean_3d_by_token = {}
         covariance_3d_by_token = {}
@@ -348,19 +349,19 @@ class PartDreamSystem(BaseLift3DSystem):
             x_mean, y_mean, z_mean = [], [], []
             x_var, y_var, z_var = [], [], []
             variances = variance_by_token[token]
-            for idx, (mean, variance) in enumerate(zip(means, variances)):
-                if idx == 0:
-                    x_mean.append(mean[1])
-                    x_var.append(variance[1])
-                elif idx == 1:
+            for view_idx, (mean, variance) in enumerate(zip(means, variances)):
+                if view_idx == 0:
                     y_mean.append(mean[1])
-                    y_var.append(variance[1])
-                elif idx == 2:
-                    # looking from the back
-                    x_mean.append(- mean[1])
                     x_var.append(variance[1])
-                elif idx == 3:
+                elif view_idx == 1:
+                    x_mean.append(mean[1])
+                    y_var.append(variance[1])
+                elif view_idx == 2:
+                    # looking from the back
                     y_mean.append(- mean[1])
+                    x_var.append(variance[1])
+                elif view_idx == 3:
+                    x_mean.append(- mean[1])
                     y_var.append(variance[1])
                 z_mean.append(mean[0])
                 z_var.append(variance[0])
@@ -372,8 +373,8 @@ class PartDreamSystem(BaseLift3DSystem):
             y_var = torch.mean(torch.stack(y_var))
             z_var = torch.mean(torch.stack(z_var))
 
-            mean_3d = torch.tensor([x_mean, y_mean, z_mean])
-            covariance_3d = torch.diag(torch.tensor([x_var, y_var, z_var]))
+            mean_3d = torch.tensor([x_mean, y_mean, -z_mean])
+            covariance_3d = torch.tensor([x_var, y_var, z_var])
             mean_3d_by_token[token] = mean_3d
             covariance_3d_by_token[token] = covariance_3d
         return mean_3d_by_token, covariance_3d_by_token
@@ -390,9 +391,9 @@ class PartDreamSystem(BaseLift3DSystem):
         covariance: torch.Tensor, shape (N, 3, 3)
         """
 
-        resolution = attn_map_by_token[list(attn_map_by_token.keys())[0]].shape[-1]
+
         mean_by_token, variance_by_token = self.get_mean_variance_from_attn_map(attn_map_by_token)
-        mean_3d_by_token, covariance_3d_by_token = self.create_3D_gaussian(mean_by_token, variance_by_token, resolution)
+        mean_3d_by_token, covariance_3d_by_token = self.create_3D_gaussian(mean_by_token, variance_by_token)
         return mean_3d_by_token, covariance_3d_by_token
 
     def render_gaussian(self,
@@ -400,9 +401,11 @@ class PartDreamSystem(BaseLift3DSystem):
                     means: torch.Tensor, # N, 3 
                     vars: torch.Tensor, # N, 3
                     ) -> Dict[str, Any]:
-        means = means*2 # hard coded should fix the create boundary function
+
         c2w = batch["c2w"] # B, 4, 4
         fovy = batch["fovy"] # B
+        means = means.unsqueeze(0).to(c2w.device)
+        vars = vars.unsqueeze(0).to(c2w.device)
         H, W = batch["height"], batch["width"] # B
         horizontal_angles = batch["azimuth"] # B
         #convert degree to radian
@@ -415,7 +418,7 @@ class PartDreamSystem(BaseLift3DSystem):
         w2c[:, :3, 3:] = -c2w[:, :3, :3].permute(0, 2, 1) @ c2w[:, :3, 3:]
         w2c[:, 3, 3] = 1.0
         # get the mean position in the camera coordinate
-        means = means - self.global_mean_shift.to(means.device).unsqueeze(0)
+     
         means = torch.cat([means, torch.tensor([1.0]).to(means.device).unsqueeze(0).repeat(means.shape[0], 1)], dim=-1) # N, 4
    
         camera_means = []
@@ -447,7 +450,7 @@ class PartDreamSystem(BaseLift3DSystem):
         adjusted_vars = torch.stack(adjusted_vars, dim=-1) # N, B, 2
 
 
-        return projected_means, adjusted_vars
+        return projected_means.squeeze(), adjusted_vars.squeeze()
     
 
     def create_projected_gaussian(self,
@@ -467,31 +470,162 @@ class PartDreamSystem(BaseLift3DSystem):
         mean_by_token, variance_by_token = self.create_3D_gaussian_from_attn_map(attn_map_by_token)
         projected_means = {}
         projected_vars = {}
+        projected_gaussian_map = {}
+        H, W = batch["height"], batch["width"]
 
         for token, means in mean_by_token.items():
             projected_mean, projected_var = self.render_gaussian(batch, means, variance_by_token[token])
             projected_means[token] = projected_mean
-            projected_vars[token] = projected_var
+            projected_vars[token] = projected_var 
+            projected_gaussian_map[token] = self.gaussian_filter(H, W, projected_mean, projected_var*4) # Hardcoded the variance scale
+            if self.cfg.visualize:
+                file_path = token.replace(" ", "_")
+                for idx in range(projected_gaussian_map[token].shape[0]):
+                    gaussian_map = projected_gaussian_map[token][idx].cpu().detach().numpy()
+                    gaussian_map = gaussian_map / np.max(gaussian_map)
+                    gaussian_map = (gaussian_map * 255).astype(np.uint8)
+                    gaussian_map = cv2.applyColorMap(gaussian_map, cv2.COLORMAP_JET)
+         
+                    cv2.imwrite(os.path.join(self.cfg.visualize_save_dir, f"{file_path}_{idx}.png"), gaussian_map)
+
         
-        return projected_means, projected_vars
+        return projected_means, projected_vars, projected_gaussian_map
 
 
+    def gaussian_filter(self,
+                        H: int,
+                        W: int,
+                        mean: torch.Tensor,
+                        var: torch.Tensor):
+
+        """
+        Create the gaussian filter
+        args:
+        H: int, the height of the image
+        W: int, the width of the image
+        mean: torch.Tensor, shape (B, 2)
+        var: torch.Tensor, shape (B, 2)
+
+        return:
+        gaussian_map: torch.Tensor, shape (B, H, W)
+        """
+
+        B = mean.size(0)  # Batch size
+
+        # Create coordinate grids
+        y = torch.linspace(0, H, H, device=mean.device).view(1, H, 1).expand(B, H, W)
+        x = torch.linspace(0, W, W, device=mean.device).view(1, 1, W).expand(B, H, W)
+        
+        # Extract mean and variance components
+        mean_y = mean[:, 1].view(B, 1, 1)
+        mean_x = mean[:, 0].view(B, 1, 1)
+        var_y = var[:, 1].view(B, 1, 1)
+        var_x = var[:, 0].view(B, 1, 1)
+        
+        # Compute Gaussian function
+        gauss_y = torch.exp(-((y - mean_y) ** 2) / (2 * var_y))
+        gauss_x = torch.exp(-((x - mean_x) ** 2) / (2 * var_x))
+        
+        gaussian_map = gauss_y * gauss_x
+        
+        # Normalize the gaussian map
+        gaussian_map = gaussian_map/torch.max(gaussian_map)
+        
+        return gaussian_map
+    
+    def recenter_images(self,
+                        rendered_images: List[torch.Tensor],
+                        part_gaussian_map: torch.Tensor,
+                        part_mean: List[torch.Tensor],
+                        part_var: List[torch.Tensor],
+                        batch: Dict[str, Any],
+                        extend_scale: float = 2.5):
+        """
+        Recenter images based on the mean and variance of parts.
+        
+        Parameters:
+        rendered_images (list of torch.Tensor): List of images rendered per view.
+        part_gaussian_map (torch.Tensor): Gaussian map of the part.
+        part_mean (list of torch.Tensor): List of part means per view.
+        part_var (list of torch.Tensor): List of part variances per view.
+        extend_scale (float): Scale to extend the bounding box.
+        batch (dict): Dictionary containing 'width' and 'height' of the images.
+        
+        Returns:
+        list of torch.Tensor: List of recentered images.
+        """
+        recentered_images = []
+        recentered_part_gaussian_maps = []
+        for view_idx, rendered_image_per_view in enumerate(rendered_images):
+            part_mean_per_view = part_mean[view_idx]
+            part_var_per_view = part_var[view_idx]
+
+            lower_bound = (part_mean_per_view - torch.sqrt(part_var_per_view) * extend_scale).int()
+            upper_bound = (part_mean_per_view + torch.sqrt(part_var_per_view) * extend_scale).int()
+
+            lower_bound = torch.max(lower_bound, torch.tensor([0, 0]).to(lower_bound.device))
+            upper_bound = torch.min(upper_bound, torch.tensor([batch["width"], batch["height"]]).to(upper_bound.device))
+
+            recentered_image = rendered_image_per_view[lower_bound[1]:upper_bound[1], lower_bound[0]:upper_bound[0]]
+            h, w, _ = recentered_image.shape
+            larger_dim = max(h, w)
 
 
-                
-        raise NotImplementedError
+            # Create padding tensor
+            padding = torch.zeros((larger_dim, larger_dim, 3)).to(recentered_image.device)
+            
+            # Compute the placement of the cropped image within the padded image
+            pad_h = (larger_dim - h) // 2
+            pad_w = (larger_dim - w) // 2
+            
+            # Place the cropped image into the center of the padded image
+            padding[pad_h:pad_h + h, pad_w:pad_w + w, :] = recentered_image
+            
+            # Resize the padded image back to the original dimensions
+            recentered_image = F.interpolate(padding.permute(2, 0, 1).unsqueeze(0), size=(batch["height"], batch["width"]), mode='bilinear', align_corners=False).squeeze(0).permute(1, 2, 0)
+            
+            a = torch.max(part_gaussian_map)
+            recentered_part_gaussian_map = part_gaussian_map[view_idx][lower_bound[1]:upper_bound[1], lower_bound[0]:upper_bound[0]]
+            padding = torch.zeros((larger_dim, larger_dim)).to(recentered_image.device)
+            padding[pad_h:pad_h + h, pad_w:pad_w + w] = recentered_part_gaussian_map
+            recentered_part_gaussian_map = F.interpolate(padding.unsqueeze(0).unsqueeze(0), size=(batch["height"], batch["width"]), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+
+            if self.cfg.visualize:
+                cv2.imwrite(os.path.join(self.cfg.visualize_save_dir,
+                                         f"recentered_image_{view_idx}.png"),
+                                         (recentered_image.cpu().detach().numpy()*255).astype(np.uint8))
+                cv2.imwrite(os.path.join(self.cfg.visualize_save_dir,
+                                            f"recentered_part_gaussian_map_{view_idx}.png"),
+                                            (recentered_part_gaussian_map.cpu().detach().numpy()*255).astype(np.uint8))
+            recentered_images.append(recentered_image)
+            recentered_part_gaussian_maps.append(recentered_part_gaussian_map)
+
+        recentered_images = torch.stack(recentered_images)
+        recentered_part_gaussian_map = torch.stack(recentered_part_gaussian_maps)
+        
+        return recentered_images, recentered_part_gaussian_map
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         return self.renderer(**batch)
 
     def training_step(self, batch, batch_idx):
         out = self(batch)
-        images = out["comp_rgb"] # 4, H, W, 3 multiview images
-        if batch_idx >= self.cfg.attention_guidance_start_step and \
-            batch_idx % self.cfg.attention_guidance_interval == 0 and self.cfg.use_global_attn:
+    
+        if self.attn_map_by_token is not None:
+            (projected_means,
+             projected_vars, 
+             projected_gaussian_map) = \
+                self.create_projected_gaussian(batch, self.attn_map_by_token)
+        
+        guidance_out = self.guidance(out["comp_rgb"],
+                                     self.prompt_utils,
+                                     **batch)
+        # get the global attention map
+        if self.cfg.use_global_attn and batch_idx % self.cfg.attention_guidance_interval == 0 \
+            and self.true_global_step > self.cfg.attention_guidance_start_step:
             attn_map_iter_idx = 0
             while attn_map_iter_idx < 100:
-                attn_map_by_token = self.get_attn_maps_sd3(images,
+                attn_map_by_token = self.get_attn_maps_sd3(images=None,
                                                         use_crf=self.cfg.use_crf)
                 # make sure the keys are the same
                 if list(attn_map_by_token.keys()) == self.part_prompts:
@@ -500,26 +634,37 @@ class PartDreamSystem(BaseLift3DSystem):
             assert len(list(attn_map_by_token.keys())) == len(self.part_prompts), \
                 "The number of attention maps should be the same as the number of part prompts."
             self.attn_map_by_token = attn_map_by_token
-        
-        if self.attn_map_by_token is not None:
-            mean_3d_by_token, covariance_3d_by_token = self.create_3D_gaussian_from_attn_map(self.attn_map_by_token)
-            mean_3d_by_token = {key: value.to(images.device) for key, value in mean_3d_by_token.items()}
-            covariance_3d_by_token = {key: value.to(images.device) for key, value in covariance_3d_by_token.items()}
-
-        
-        guidance_out = self.guidance(out["comp_rgb"],
-                                     self.prompt_utils,
-                                     mask = self.attn_map_by_token,
-                                     token_index = self.part_token_index_list,
-                                     **batch)
-
 
         loss = 0.0
+        if self.cfg.use_global_attn and batch_idx > self.cfg.attention_guidance_start_step:
+            for part_idx, part_prompt_utils in enumerate(self.part_prompt_utils_list):
+                part_gaussian_map = projected_gaussian_map[self.part_prompts[part_idx]]
+                part_mean = projected_means[self.part_prompts[part_idx]]
+                part_var = projected_vars[self.part_prompts[part_idx]]
+                rendered_images = out["comp_rgb"] # 4, H, W, 3
+                if self.cfg.use_2d_recentering:
+                    rendered_images, part_gaussian_map = self.recenter_images(rendered_images,
+                                                                            part_gaussian_map,
+                                                                            part_mean,
+                                                                            part_var,
+                                                                            batch)
+
+
+
+                part_guidance_out = self.guidance(rendered_images,
+                                            part_prompt_utils,
+                                            mask = part_gaussian_map,
+                                            **batch)
+                for name, value in part_guidance_out.items():
+                    if name.startswith("loss_"):
+                        loss += value*self.C(self.cfg.part_loss_scale)
+
 
         for name, value in guidance_out.items():
             self.log(f"train/{name}", value)
             if name.startswith("loss_"):
                 loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
+
 
         if self.C(self.cfg.loss.lambda_orient) > 0:
             if "normal" not in out:

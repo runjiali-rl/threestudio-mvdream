@@ -217,6 +217,16 @@ class PartDreamDiffusionGuidance(BaseObject):
                 )
 
             # x0-reconstruction loss from Sec 3.2 and Appendix
+            if mask is not None:
+                # reshape mask to match latents_recon
+                loss_mask = F.interpolate(
+                    mask.unsqueeze(1),
+                    (latents_recon.shape[-2], latents_recon.shape[-1]),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                latents_recon = latents_recon * loss_mask
+                latents = latents * loss_mask
             loss = (
                 0.5
                 * F.mse_loss(latents, latents_recon.detach(), reduction="sum")
