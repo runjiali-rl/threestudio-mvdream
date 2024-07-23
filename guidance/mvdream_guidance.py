@@ -44,6 +44,7 @@ class PartDreamDiffusionGuidance(BaseObject):
         image_size: int = 256
         recon_loss: bool = True
         recon_std_rescale: float = 0.5
+        use_cpu_offload: bool = False
 
     cfg: Config
 
@@ -53,7 +54,8 @@ class PartDreamDiffusionGuidance(BaseObject):
         self.model = build_model(self.cfg.model_name, ckpt_path=self.cfg.ckpt_path).to(
             self.device
         )
-        self.model = cpu_offload(self.model)
+        if self.cfg.use_cpu_offload:
+            self.model = cpu_offload(self.model)
         for p in self.model.parameters():
             p.requires_grad_(False)
 
@@ -104,8 +106,10 @@ class PartDreamDiffusionGuidance(BaseObject):
         timestep=None,
         text_embeddings=None,
         input_is_latent=False,
-        mask=None,
+        mask=None, 
         token_index=None,
+        cross_attention_scale: float = 1.0,
+        self_attention_scale: float = 1.0,
         **kwargs,
     ):
         batch_size = rgb.shape[0]
@@ -176,7 +180,9 @@ class PartDreamDiffusionGuidance(BaseObject):
                                                 t_expand,
                                                 context,
                                                 mask=mask,
-                                                token_index=token_index)
+                                                token_index=token_index,
+                                                cross_attention_scale=cross_attention_scale,
+                                                self_attention_scale=self_attention_scale)
                               
 
         # perform guidance
@@ -217,16 +223,16 @@ class PartDreamDiffusionGuidance(BaseObject):
                 )
 
             # x0-reconstruction loss from Sec 3.2 and Appendix
-            if mask is not None:
-                # reshape mask to match latents_recon
-                loss_mask = F.interpolate(
-                    mask.unsqueeze(1),
-                    (latents_recon.shape[-2], latents_recon.shape[-1]),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-                latents_recon = latents_recon * loss_mask
-                latents = latents * loss_mask
+            # if mask is not None:
+            #     # reshape mask to match latents_recon
+            #     loss_mask = F.interpolate(
+            #         mask.unsqueeze(1),
+            #         (latents_recon.shape[-2], latents_recon.shape[-1]),
+            #         mode="bilinear",
+            #         align_corners=False,
+            #     )
+            #     latents_recon = latents_recon * loss_mask
+            #     latents = latents * loss_mask
             loss = (
                 0.5
                 * F.mse_loss(latents, latents_recon.detach(), reduction="sum")

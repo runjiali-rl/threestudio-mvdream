@@ -70,16 +70,16 @@ system:
   
   use_global_attn: True
   global_model_name: stabilityai/stable-diffusion-3-medium-diffusers
-  attention_guidance_start_step: 500
+  attention_guidance_start_step: 50
   attention_guidance_interval: 2000
   attention_guidance_timestep_start: 650
   attention_guidance_timestep_end: 100
   attention_guidance_free_style_timestep_start: 800
   use_crf: True
+  cross_attention_scale: 1.0
+  self_attention_scale: 1.0
 
-  part_loss_scale: 0.5
-
-
+ 
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
 
@@ -108,6 +108,7 @@ system:
     max_step_percent: [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
+    use_cpu_offload: False
 
 
   part_expert_prompt_processor_type: "deep-floyd-prompt-processor"
@@ -126,7 +127,7 @@ system:
 
 
   use_part_expert: False
-  use_2d_recentering: True
+  # use_2d_recentering: True
 
 
   visualize: False

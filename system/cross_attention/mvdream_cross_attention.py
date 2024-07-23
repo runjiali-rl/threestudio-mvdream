@@ -38,7 +38,18 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
 
 
 
-def MultiViewUNetForward(self, x, timesteps=None, context=None, y=None, camera=None, num_frames=1, mask=None, token_index=None, **kwargs):
+def MultiViewUNetForward(self,
+                         x,
+                         timesteps=None,
+                         context=None,
+                         y=None,
+                         camera=None,
+                         num_frames=1,
+                         mask=None,
+                         token_index=None,
+                         cross_attention_scale: float = 1.0,
+                         self_attention_scale: float = 1.0, 
+                         **kwargs):
     """
     Apply the model to an input batch.
     :param x: an [(N x F) x C x ...] Tensor of inputs. F is the number of frames (views).
@@ -67,12 +78,33 @@ def MultiViewUNetForward(self, x, timesteps=None, context=None, y=None, camera=N
 
     h = x.type(self.dtype)
     for module in self.input_blocks:
-        h = module(h, emb, context, num_frames=num_frames, mask=mask, token_index=token_index)
+        h = module(h,
+                   emb,
+                   context,
+                   num_frames=num_frames,
+                   mask=mask,
+                   token_index=token_index,
+                   cross_attention_scale=cross_attention_scale,
+                   self_attention_scale=self_attention_scale,)
         hs.append(h)
-    h = self.middle_block(h, emb, context, num_frames=num_frames, mask=mask, token_index=token_index)
+    h = self.middle_block(h,
+                        emb,
+                        context,
+                        num_frames=num_frames,
+                        mask=mask,
+                        token_index=token_index,
+                        cross_attention_scale=cross_attention_scale,
+                        self_attention_scale=self_attention_scale,)
     for module in self.output_blocks:
         h = th.cat([h, hs.pop()], dim=1)
-        h = module(h, emb, context, num_frames=num_frames, mask=mask, token_index=token_index)
+        h = module(h,
+                   emb,
+                   context,
+                   num_frames=num_frames,
+                   mask=mask,
+                   token_index=token_index,
+                   cross_attention_scale=cross_attention_scale,
+                   self_attention_scale=self_attention_scale,)
     h = h.type(x.dtype)
     if self.predict_codebook_ids:
         return self.id_predictor(h)
@@ -81,12 +113,26 @@ def MultiViewUNetForward(self, x, timesteps=None, context=None, y=None, camera=N
 
 
 
-def TimestepEmbedSequentialForward(self, x, emb, context=None, num_frames=1, mask=None, token_index=None):
+def TimestepEmbedSequentialForward(self,
+                                   x,
+                                   emb,
+                                   context=None,
+                                   num_frames=1,
+                                   mask=None,
+                                   token_index=None,
+                                   cross_attention_scale: float = 1.0,
+                                   self_attention_scale: float = 1.0,):
     for layer in self:
         if isinstance(layer, TimestepBlock):
             x = layer(x, emb)
         elif isinstance(layer, SpatialTransformer3D):
-            x = layer(x, context, num_frames=num_frames, mask=mask, token_index=token_index)
+            x = layer(x,
+                      context,
+                      num_frames=num_frames,
+                      mask=mask,
+                      token_index=token_index,
+                      cross_attention_scale=cross_attention_scale,
+                      self_attention_scale=self_attention_scale,)
         elif isinstance(layer, SpatialTransformer):
             x = layer(x, context)
         else:
@@ -94,7 +140,14 @@ def TimestepEmbedSequentialForward(self, x, emb, context=None, num_frames=1, mas
     return x
 
 
-def SpatialTransformer3DForward(self, x, context=None, num_frames=1, mask=None, token_index=None):
+def SpatialTransformer3DForward(self,
+                                x,
+                                context=None,
+                                num_frames=1,
+                                mask=None,
+                                token_index=None,
+                                cross_attention_scale: float = 1.0,
+                                self_attention_scale: float = 1.0,):
     # note: if no context is given, cross-attention defaults to self-attention
     if not isinstance(context, list):
         context = [context]
@@ -107,7 +160,13 @@ def SpatialTransformer3DForward(self, x, context=None, num_frames=1, mask=None, 
     if self.use_linear:
         x = self.proj_in(x)
     for i, block in enumerate(self.transformer_blocks):
-        x = block(x, context=context[i], num_frames=num_frames, mask=mask, token_index=token_index)
+        x = block(x,
+                  context=context[i],
+                  num_frames=num_frames,
+                  mask=mask,
+                  token_index=token_index,
+                  cross_attention_scale=cross_attention_scale,
+                  self_attention_scale=self_attention_scale,)
     if self.use_linear:
         x = self.proj_out(x)
     x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w).contiguous()
@@ -116,23 +175,53 @@ def SpatialTransformer3DForward(self, x, context=None, num_frames=1, mask=None, 
     return x + x_in
 
 
-def BasicTransformerBlock3DForward(self, x, context=None, num_frames=1, mask=None, token_index=None):
-    return checkpoint(self._forward, (x, context, num_frames, mask, token_index), self.parameters(), self.checkpoint)
+def BasicTransformerBlock3DForward(self,
+                                   x,
+                                   context=None,
+                                   num_frames=1,
+                                   mask=None,
+                                   token_index=None,
+                                   cross_attention_scale: float = 1.0,
+                                   self_attention_scale: float = 1.0,):
+    return checkpoint(self._forward,
+                      (x, context, num_frames, mask, token_index, cross_attention_scale, self_attention_scale),
+                      self.parameters(),
+                      self.checkpoint)
 
 
-def _BasicTransformerBlock3DForward(self, x, context=None, num_frames=1, mask=None, token_index=None):
+def _BasicTransformerBlock3DForward(self,
+                                    x,
+                                    context=None,
+                                    num_frames=1,
+                                    mask=None,
+                                    token_index=None,
+                                    cross_attention_scale: float = 1.0,
+                                    self_attention_scale: float = 1.0,):
     # 3D self-attention
     # maybe we need a mask for the self-attention
     x = rearrange(x, "(b f) l c -> b (f l) c", f=num_frames).contiguous()
-    x = self.attn1(self.norm1(x), context=context if self.disable_self_attn else None) + x
+    x = self.attn1(self.norm1(x),
+                   mask=mask,
+                   self_attention_scale=self_attention_scale,
+                   context=context if self.disable_self_attn else None) + x
     # 2D cross-attention for text
     x = rearrange(x, "b (f l) c -> (b f) l c", f=num_frames).contiguous()
-    x = self.attn2(self.norm2(x), context=context, mask=mask, token_index=token_index) + x
+    x = self.attn2(self.norm2(x),
+                   context=context,
+                   cross_attention_scale=cross_attention_scale,
+                   mask=mask,
+                   token_index=token_index) + x
     x = self.ff(self.norm3(x)) + x
     return x
 
 
-def attention(query, key, value, attn_mask=None, token_index=None, p=0.0):
+def attention(query, key, value,
+              attn_mask=None,
+              token_index=None,
+              p=0.0,
+              has_context=True,
+              cross_attention_scale: float = 1.0,
+              self_attention_scale: float = 1.0,):
     """
     Compute the attention mechanism.
     
@@ -145,21 +234,43 @@ def attention(query, key, value, attn_mask=None, token_index=None, p=0.0):
     scale = 1.0 / query.shape[-1] ** 0.5
     query = query * scale
     attn = query @ key.transpose(-2, -1) # [b*f*h, T, T']
+    # attn = F.softmax(attn, dim=-1)
 
     if attn_mask is not None:
-        attn = attn * attn_mask
-        stop = 1
-        # for idx, attn_mask_ in enumerate(attn_mask):
-        #     token_indexes_ = token_index[idx]
-        #     for token_index_ in token_indexes_:
-        #         attn[:, :, token_index_] = attn[:,  :, token_index_] * attn_mask_.to(attn.device).to(attn.dtype)
+        if has_context:
+            for idx, attn_mask_ in enumerate(attn_mask):
+                a = torch.max(attn_mask_)
+                b = torch.mean(attn_mask_)
+                attn_mask_ = attn_mask_/torch.sum(attn_mask_)*torch.sum(torch.ones_like(attn_mask_))
+                attn_mask_ = torch.log(attn_mask_ + 1e-9)
+                c = torch.max(attn_mask_)
+                d = torch.mean(attn_mask_)
+                token_indexes_ = token_index[idx]
+                for token_index_ in token_indexes_:
+                    attn[:, :, token_index_] = attn[:,  :, token_index_] + (attn_mask_.to(attn.device).to(attn.dtype)*cross_attention_scale)
+        else:
+            for idx, attn_mask_ in enumerate(attn_mask):
+                a = torch.max(attn_mask_)
+                b = torch.mean(attn_mask_)
+             
+                attn_mask_ = torch.log(attn_mask_ + 1e-9)
+                c = torch.max(attn_mask_)
+                d = torch.mean(attn_mask_)
+      
+                attn= attn + (attn_mask_.to(attn.device).to(attn.dtype)*self_attention_scale)
     attn = attn.softmax(-1)
     attn = F.dropout(attn, p)
     attn = attn @ value
     return attn
 
 
-def MemoryEfficientCrossAttentionForward(self, x, context=None, mask=None, token_index=None):
+def MemoryEfficientCrossAttentionForward(self,
+                                         x,
+                                         context=None,
+                                         mask=None,
+                                         token_index=None,
+                                         cross_attention_scale: float = 1.0,
+                                         self_attention_scale: float = 1.0,):
     """
     Apply the cross-attention mechanism.
     :param x: an [b*f x T x d] Tensor of inputs. (b*f, n*n, d) b: batch, f: frames, n: resolution, d: dimension of the input
@@ -189,40 +300,54 @@ def MemoryEfficientCrossAttentionForward(self, x, context=None, mask=None, token
     if mask is not None:
   
         if has_context: # cross attention
+ 
             input_resolution = torch.sqrt(torch.tensor(x.shape[1])).int()
-            # mask_list = []
-            # if isinstance(mask, dict):
-            #     for key_idx, key in enumerate(mask.keys()):
-            #         single_mask = interpolate(mask[key].unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
-            #         single_mask = single_mask.view(mask[key].shape[0], -1) # [f, n, n] -> [f, n*n]
-            #         f = single_mask.shape[0]
-            #     # reshape mask to [f, T] -> [b*f*h, T] -> [b*f*h, T, 1]
-            #         mask_list.append(single_mask.repeat(int(self.heads*b/f), 1))
+            mask_list = []
+            if isinstance(mask, dict):
+                for key_idx, key in enumerate(mask.keys()):
+                    single_mask = interpolate(mask[key].unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+                    single_mask = single_mask.view(mask[key].shape[0], -1) # [f, n, n] -> [f, n*n]
+                    f = single_mask.shape[0]
+                # reshape mask to [f, T] -> [b*f*h, T] -> [b*f*h, T, 1]
+                    mask_list.append(single_mask.repeat(int(self.heads*b/f), 1))
         
-            f = mask.shape[0]
-            mask = interpolate(mask.unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
-            mask = mask.view(mask.shape[0], -1) # [f, n, n] -> [f, n*n]
-            # reshape mask to [f*T] -> [b*h, f*T] -> [b*h, f*T, 1]
-            mask = mask.repeat(int(self.heads*x.shape[0]/f), 1)
-            mask = mask.unsqueeze(2)
-            out = attention(q, k, v, attn_mask=mask, token_index=token_index)
-        else: # self attention
-            raise NotImplementedError
             # f = mask.shape[0]
-            # input_resolution = torch.sqrt(torch.tensor(x.shape[1])/f).int()
             # mask = interpolate(mask.unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
-            # mask = mask.view(-1) # [f, n, n] -> [f*n*n]
-          
+            # mask = mask.view(mask.shape[0], -1) # [f, n, n] -> [f, n*n]
             # # reshape mask to [f*T] -> [b*h, f*T] -> [b*h, f*T, 1]
-            # mask = mask.unsqueeze(0).repeat(int(self.heads*x.shape[0]), 1)
+            # mask = mask.repeat(int(self.heads*x.shape[0]/f), 1)
             # mask = mask.unsqueeze(2)
-        
+                out = attention(q, k, v,
+                                attn_mask=mask_list,
+                                token_index=token_index,
+                                has_context=has_context,
+                                cross_attention_scale=cross_attention_scale)
+            # else:
+                # raise ValueError("mask should be a dict")
+        else: # self attention
+            f = mask[list(mask.keys())[0]].shape[0]
+            input_resolution = torch.sqrt(torch.tensor(x.shape[1])/f).int()
+            mask_list = []
+            if isinstance(mask, dict):
+                for key_idx, key in enumerate(mask.keys()):
+                    single_mask = mask[key]
+                    single_mask = interpolate(single_mask.unsqueeze(0), size=(input_resolution, input_resolution), mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+                    single_mask = single_mask.view(-1) # [f, n, n] -> [f*n*n]
+                    # reshape mask to [f*T] -> [b*h, f*T] -> [b*h, f*T, 1]
+                    single_mask = single_mask.unsqueeze(0).repeat(int(self.heads*x.shape[0]), 1)
+                    single_mask = single_mask.unsqueeze(2)
+                    single_mask = single_mask/ torch.sum(single_mask)*torch.sum(torch.ones_like(single_mask))
+                
 
-            # mask = mask @ mask.transpose(1, 2)
-            # mask = torch.sqrt(mask + 1e-9)
+                    single_mask = single_mask @ single_mask.transpose(1, 2)
+                    single_mask = torch.sqrt(single_mask + 1e-9)
+                    mask_list.append(single_mask)
 
-            # out = attention(q, k, v, attn_mask=mask)
-         
+                out = attention(q, k, v,
+                                attn_mask=mask_list,
+                                has_context=has_context,
+                                self_attention_scale=self_attention_scale)
+            
 
     else:
 
@@ -241,9 +366,23 @@ def DiffusionWrapperForward(self, *args, **kwargs):
     return self.diffusion_model(*args, **kwargs)
 
 
-def LatentDiffusionInterfaceApplyModel(self, x_noisy, t, cond, mask=None, token_index=None, **kwargs):
+def LatentDiffusionInterfaceApplyModel(self,
+                                       x_noisy,
+                                       t,
+                                       cond,
+                                       mask=None,
+                                       token_index=None,
+                                       cross_attention_scale: float = 1.0,
+                                       self_attention_scale: float = 1.0, 
+                                       **kwargs):
     assert isinstance(cond, dict)
-    return self.model(x_noisy, t, mask=mask, token_index=token_index, **cond, **kwargs)
+    return self.model(x_noisy, t,
+                      mask=mask,
+                      token_index=token_index,
+                      cross_attention_scale=cross_attention_scale,
+                      self_attention_scale=self_attention_scale,
+                      **cond,
+                      **kwargs)
 
 
 

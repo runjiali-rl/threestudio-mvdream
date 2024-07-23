@@ -63,9 +63,11 @@ class PartDreamSystem(BaseLift3DSystem):
         attention_guidance_timestep_end:int = 400
         attention_guidance_free_style_timestep_start:int = 500
         use_crf: bool = False
-        part_loss_scale: float = 0.1
 
-        use_2d_recentering: bool = False
+        cross_attention_scale: float = 1.0
+        self_attention_scale: float = 1.0
+
+
         mllm_optimize_prompt: bool = False
 
 
@@ -119,9 +121,9 @@ class PartDreamSystem(BaseLift3DSystem):
         self.prompt_utils = self.prompt_processor()
         self.guidance_tokenizer = AutoTokenizer.from_pretrained(self.cfg.prompt_processor.pretrained_model_name_or_path, subfolder="tokenizer")
         self.part_token_index_list = []
-        # for part_prompt in self.part_prompts:
-        #     token_index_list = self.get_token_index(self.guidance_tokenizer, self.cfg.prompt_processor.prompt, part_prompt)
-        #     self.part_token_index_list.append(token_index_list)
+        for part_prompt in self.part_prompts:
+            token_index_list = self.get_token_index(self.guidance_tokenizer, self.cfg.prompt_processor.prompt, part_prompt)
+            self.part_token_index_list.append(token_index_list)
 
         self.part_prompt_utils_list = []
         for prompt in self.part_prompts:
@@ -134,16 +136,20 @@ class PartDreamSystem(BaseLift3DSystem):
 
 
 
-
+        file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
+        save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
         # initialize the global guidance model
-        self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
-                                                        use_safetensors=True,
-                                                        torch_dtype=torch.float16,
-                                                        cache_dir=self.cfg.cache_dir)
-        set_forward_sd3(self.global_model.transformer)
-        register_cross_attention_hook(self.global_model.transformer)
-        self.global_model = self.global_model.to("cuda")
-        self.global_model.enable_model_cpu_offload()
+        if not os.path.exists(save_path):
+            self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
+                                                            use_safetensors=True,
+                                                            torch_dtype=torch.float16,
+                                                            cache_dir=self.cfg.cache_dir)
+            set_forward_sd3(self.global_model.transformer)
+            register_cross_attention_hook(self.global_model.transformer)
+            self.global_model = self.global_model.to("cuda")
+            self.global_model.enable_model_cpu_offload()
+        else:
+            self.global_model = None
         self.postprocessor = DenseCRF(
             iter_max=10,
             pos_xy_std=1,
@@ -477,8 +483,8 @@ class PartDreamSystem(BaseLift3DSystem):
         for token, means in mean_by_token.items():
             projected_mean, projected_var = self.render_gaussian(batch, means, variance_by_token[token])
             projected_means[token] = projected_mean
-            projected_vars[token] = projected_var 
-            projected_gaussian_map[token] = self.gaussian_filter(H, W, projected_mean, projected_var*4) # Hardcoded the variance scale
+            projected_vars[token] = projected_var * 8 # Hardcoded the variance scale 
+            projected_gaussian_map[token] = self.gaussian_filter(H, W, projected_mean, projected_var * 8) # Hardcoded the variance scale
             if self.cfg.visualize:
                 file_path = token.replace(" ", "_")
                 for idx in range(projected_gaussian_map[token].shape[0]):
@@ -540,7 +546,7 @@ class PartDreamSystem(BaseLift3DSystem):
                         part_mean: List[torch.Tensor],
                         part_var: List[torch.Tensor],
                         batch: Dict[str, Any],
-                        extend_scale: float = 2.5):
+                        extend_scale: float = 2):
         """
         Recenter images based on the mean and variance of parts.
         
@@ -617,9 +623,16 @@ class PartDreamSystem(BaseLift3DSystem):
              projected_vars, 
              projected_gaussian_map) = \
                 self.create_projected_gaussian(batch, self.attn_map_by_token)
+        else:
+            projected_gaussian_map = None
         
+
         guidance_out = self.guidance(out["comp_rgb"],
                                      self.prompt_utils,
+                                     mask = projected_gaussian_map,
+                                     token_index=self.part_token_index_list,
+                                     cross_attention_scale=self.cfg.cross_attention_scale,
+                                     self_attention_scale=self.cfg.self_attention_scale,
                                      **batch)
         # get the global attention map
         if self.cfg.use_global_attn and \
@@ -638,28 +651,28 @@ class PartDreamSystem(BaseLift3DSystem):
             self.attn_map_by_token = attn_map_by_token
 
         loss = 0.0
-        if self.cfg.use_global_attn and batch_idx > self.cfg.attention_guidance_start_step:
-            for part_idx, part_prompt_utils in enumerate(self.part_prompt_utils_list):
-                part_gaussian_map = projected_gaussian_map[self.part_prompts[part_idx]]
-                part_mean = projected_means[self.part_prompts[part_idx]]
-                part_var = projected_vars[self.part_prompts[part_idx]]
-                rendered_images = out["comp_rgb"] # 4, H, W, 3
-                if self.cfg.use_2d_recentering:
-                    rendered_images, part_gaussian_map = self.recenter_images(rendered_images,
-                                                                            part_gaussian_map,
-                                                                            part_mean,
-                                                                            part_var,
-                                                                            batch)
+        # if self.cfg.use_global_attn and batch_idx > self.cfg.attention_guidance_start_step:
+        #     for part_idx, part_prompt_utils in enumerate(self.part_prompt_utils_list):
+        #         part_gaussian_map = projected_gaussian_map[self.part_prompts[part_idx]]
+        #         part_mean = projected_means[self.part_prompts[part_idx]]
+        #         part_var = projected_vars[self.part_prompts[part_idx]]
+        #         rendered_images = out["comp_rgb"] # 4, H, W, 3
+        #         if self.cfg.use_2d_recentering:
+        #             rendered_images, part_gaussian_map = self.recenter_images(rendered_images,
+        #                                                                     part_gaussian_map,
+        #                                                                     part_mean,
+        #                                                                     part_var,
+        #                                                                     batch)
 
 
 
-                part_guidance_out = self.guidance(rendered_images,
-                                            part_prompt_utils,
-                                            mask = part_gaussian_map,
-                                            **batch)
-                for name, value in part_guidance_out.items():
-                    if name.startswith("loss_"):
-                        loss += value*self.C(self.cfg.part_loss_scale)
+        #         part_guidance_out = self.guidance(rendered_images,
+        #                                     part_prompt_utils,
+        #                                     mask = part_gaussian_map,
+        #                                     **batch)
+        #         for name, value in part_guidance_out.items():
+        #             if name.startswith("loss_"):
+        #                 loss += value*self.C(self.cfg.part_loss_scale)
 
 
         for name, value in guidance_out.items():
