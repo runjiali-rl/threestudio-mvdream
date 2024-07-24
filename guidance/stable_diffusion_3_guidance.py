@@ -13,6 +13,9 @@ from threestudio.utils.base import BaseObject
 from threestudio.utils.misc import C, cleanup, parse_version
 from threestudio.utils.ops import perpendicular_component
 from threestudio.utils.typing import *
+from accelerate import cpu_offload
+from PIL import Image
+import numpy as np
 
 
 @threestudio.register("stable-diffusion-3-guidance")
@@ -24,6 +27,7 @@ class StableDiffusion3Guidance(BaseObject):
         enable_sequential_cpu_offload: bool = False
         enable_attention_slicing: bool = False
         enable_channels_last_format: bool = False
+        enable_vae_tiling: bool = False
         guidance_scale: float = 100.0
         grad_clip: Optional[
             Any
@@ -67,7 +71,14 @@ class StableDiffusion3Guidance(BaseObject):
         self.pipe = DiffusionPipeline.from_pretrained(
             self.cfg.pretrained_model_name_or_path,
             **pipe_kwargs,
-        ).to(self.device)
+                ).to(self.device)
+        # self.pipe.enable_model_cpu_offload()
+        # cpu_offload(self.pipe.transformer)
+        # self.pipe.vae_scale_factor
+        self.height = self.pipe.default_sample_size * 7
+        self.width = self.pipe.default_sample_size * 7
+        self.num_channels_latents = self.pipe.transformer.config.in_channels
+  
 
         if self.cfg.enable_memory_efficient_attention:
             if parse_version(torch.__version__) >= parse_version("2"):
@@ -89,7 +100,8 @@ class StableDiffusion3Guidance(BaseObject):
 
         if self.cfg.enable_channels_last_format:
             self.pipe.transformer.to(memory_format=torch.channels_last)
-
+        if self.cfg.enable_vae_tiling:
+            self.pipe.vae.enable_tiling()
         del self.pipe.text_encoder
         cleanup()
 
@@ -138,12 +150,12 @@ class StableDiffusion3Guidance(BaseObject):
 
         threestudio.info(f"Loaded Stable Diffusion!")
 
-    @torch.cuda.amp.autocast(enabled=False)
+    # @torch.cuda.amp.autocast(enabled=False)
     def set_min_max_steps(self, min_step_percent=0.02, max_step_percent=0.98):
         self.min_step = int(self.num_train_timesteps * min_step_percent)
         self.max_step = int(self.num_train_timesteps * max_step_percent)
 
-    @torch.cuda.amp.autocast(enabled=False)
+    # @torch.cuda.amp.autocast(enabled=False)
     def forward_transformer(
         self,
         latents: Float[Tensor, "..."],
@@ -151,23 +163,26 @@ class StableDiffusion3Guidance(BaseObject):
         encoder_hidden_states: Float[Tensor, "..."],
     ) -> Float[Tensor, "..."]:
         input_dtype = latents.dtype
-        return self.transformer(
-            latents.to(self.weights_dtype),
-            t.to(self.weights_dtype),
-            encoder_hidden_states=encoder_hidden_states.to(self.weights_dtype),
+        noise_pred = self.transformer(
+            hidden_states=latents.to(self.weights_dtype),
+            timestep=t.to(self.weights_dtype),
+            encoder_hidden_states=encoder_hidden_states[0].to(self.weights_dtype),
+            pooled_projections=encoder_hidden_states[1].to(self.weights_dtype),
         ).sample.to(input_dtype)
+        return noise_pred
 
-    @torch.cuda.amp.autocast(enabled=False)
+    # @torch.cuda.amp.autocast(enabled=False)
     def encode_images(
         self, imgs: Float[Tensor, "B 3 512 512"]
     ) -> Float[Tensor, "B 4 64 64"]:
+
         input_dtype = imgs.dtype
-        imgs = imgs * 2.0 - 1.0
-        posterior = self.vae.encode(imgs.to(self.weights_dtype)).latent_dist
-        latents = posterior.sample() * self.vae.config.scaling_factor
+        imgs = self.pipe.image_processor.preprocess(imgs).to("cuda").to(self.pipe.vae.dtype)
+        latents = self.pipe.vae.encode(imgs).latent_dist.sample()
+
         return latents.to(input_dtype)
 
-    @torch.cuda.amp.autocast(enabled=False)
+    # @torch.cuda.amp.autocast(enabled=False)
     def decode_latents(
         self,
         latents: Float[Tensor, "B 4 H W"],
@@ -268,6 +283,13 @@ class StableDiffusion3Guidance(BaseObject):
         sigma = ((1 - self.alphas[t]) ** 0.5).view(-1, 1, 1, 1)
         latents_denoised = (latents_noisy - sigma * noise_pred) / alpha
         image_denoised = self.decode_latents(latents_denoised)
+
+        # save image_denoised
+        for i in range(batch_size):
+            img = Image.fromarray((image_denoised[i].cpu().numpy() * 255).astype(np.uint8).transpose(1, 2, 0))
+            img.save(f"image_denoised_{i}.png")
+
+
 
         grad = w * (noise_pred - noise)
         # image-space SDS proposed in HiFA: https://hifa-team.github.io/HiFA-site/
@@ -397,13 +419,13 @@ class StableDiffusion3Guidance(BaseObject):
         batch_size = rgb.shape[0]
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
-        latents: Float[Tensor, "B 4 64 64"]
+        latents: Float[Tensor, "B 4 128 128"]
         rgb_BCHW_512 = F.interpolate(
-            rgb_BCHW, (512, 512), mode="bilinear", align_corners=False
+            rgb_BCHW, (self.height, self.width), mode="nearest"
         )
         if rgb_as_latents:
             latents = F.interpolate(
-                rgb_BCHW, (64, 64), mode="bilinear", align_corners=False
+                rgb_BCHW, (128, 128), mode="bilinear", align_corners=False
             )
         else:
             # encode image into latents with vae
@@ -477,7 +499,7 @@ class StableDiffusion3Guidance(BaseObject):
 
         return guidance_out
 
-    @torch.cuda.amp.autocast(enabled=False)
+    # @torch.cuda.amp.autocast(enabled=False)
     @torch.no_grad()
     def get_noise_pred(
         self,
@@ -530,7 +552,7 @@ class StableDiffusion3Guidance(BaseObject):
 
         return noise_pred
 
-    @torch.cuda.amp.autocast(enabled=False)
+    # @torch.cuda.amp.autocast(enabled=False)
     @torch.no_grad()
     def guidance_eval(
         self,
