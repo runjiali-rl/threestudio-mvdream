@@ -420,6 +420,9 @@ def encode_prompt(
         negative_pooled_prompt_embeds = torch.cat(
             [negative_pooled_prompt_embed, negative_pooled_prompt_2_embed], dim=-1
         )
+    a = torch.sum(prompt_embeds - negative_prompt_embeds)
+    b = torch.max(prompt_embeds - negative_prompt_embeds)
+    c = torch.sum(clip_prompt_embeds - negative_clip_prompt_embeds)
 
     return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
     # return {

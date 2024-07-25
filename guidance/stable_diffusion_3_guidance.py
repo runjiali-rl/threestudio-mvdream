@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from diffusers import DDIMScheduler, DDPMScheduler, DiffusionPipeline
+from diffusers import DDIMScheduler, DDPMScheduler, DiffusionPipeline, FlowMatchEulerDiscreteScheduler
 from diffusers.utils.import_utils import is_xformers_available
 from tqdm import tqdm
 
@@ -13,9 +13,27 @@ from threestudio.utils.base import BaseObject
 from threestudio.utils.misc import C, cleanup, parse_version
 from threestudio.utils.ops import perpendicular_component
 from threestudio.utils.typing import *
-from accelerate import cpu_offload
 from PIL import Image
 import numpy as np
+import PIL
+import os
+
+def display_sample(_image, i, save_dir):
+        if isinstance(_image, PIL.Image.Image):
+            image_pil = _image
+        else:
+            _image = _image.permute(0, 2, 3, 1)
+            _image = _image.cpu().detach().numpy()
+            image_processed = (_image * 255).clip(0, 255)
+            image_processed = image_processed.astype(np.uint8)
+            a = np.max(image_processed)
+            b = np.min(image_processed)
+
+            image_pil = PIL.Image.fromarray(image_processed[0])
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f'guidance_sample_{i}.jpg')
+        image_pil.save(save_path)
 
 
 @threestudio.register("stable-diffusion-3-guidance")
@@ -75,8 +93,8 @@ class StableDiffusion3Guidance(BaseObject):
         # self.pipe.enable_model_cpu_offload()
         # cpu_offload(self.pipe.transformer)
         # self.pipe.vae_scale_factor
-        self.height = self.pipe.default_sample_size * 7
-        self.width = self.pipe.default_sample_size * 7
+        self.height = self.pipe.default_sample_size * 8
+        self.width = self.pipe.default_sample_size * 8
         self.num_channels_latents = self.pipe.transformer.config.in_channels
   
 
@@ -121,7 +139,7 @@ class StableDiffusion3Guidance(BaseObject):
 
         if self.cfg.use_sjc:
             # score jacobian chaining use DDPM
-            self.scheduler = DDPMScheduler.from_pretrained(
+            self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
                 self.cfg.pretrained_model_name_or_path,
                 subfolder="scheduler",
                 torch_dtype=self.weights_dtype,
@@ -130,7 +148,7 @@ class StableDiffusion3Guidance(BaseObject):
                 beta_schedule="scaled_linear",
             )
         else:
-            self.scheduler = DDIMScheduler.from_pretrained(
+            self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
                 self.cfg.pretrained_model_name_or_path,
                 subfolder="scheduler",
                 torch_dtype=self.weights_dtype,
@@ -139,9 +157,7 @@ class StableDiffusion3Guidance(BaseObject):
         self.num_train_timesteps = self.scheduler.config.num_train_timesteps
         self.set_min_max_steps()  # set to default value
 
-        self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(
-            self.device
-        )
+        self.alphas: Float[Tensor, "..."] = 1-self.scheduler.sigmas.to(self.device)
         if self.cfg.use_sjc:
             # score jacobian chaining need mu
             self.us: Float[Tensor, "..."] = torch.sqrt((1 - self.alphas) / self.alphas)
@@ -168,16 +184,21 @@ class StableDiffusion3Guidance(BaseObject):
             timestep=t.to(self.weights_dtype),
             encoder_hidden_states=encoder_hidden_states[0].to(self.weights_dtype),
             pooled_projections=encoder_hidden_states[1].to(self.weights_dtype),
-        ).sample.to(input_dtype)
+            return_dict=False,
+        )[0].to(input_dtype)
         return noise_pred
 
     # @torch.cuda.amp.autocast(enabled=False)
     def encode_images(
-        self, imgs: Float[Tensor, "B 3 512 512"]
-    ) -> Float[Tensor, "B 4 64 64"]:
+        self, imgs: Float[Tensor, "B 3 1024 1024"]
+    ) -> Float[Tensor, "B 4 128 128"]:
 
         input_dtype = imgs.dtype
+        c = torch.min(imgs)
+        d = torch.max(imgs)
         imgs = self.pipe.image_processor.preprocess(imgs).to("cuda").to(self.pipe.vae.dtype)
+        a = torch.min(imgs)
+        b = torch.max(imgs)
         latents = self.pipe.vae.encode(imgs).latent_dist.sample()
 
         return latents.to(input_dtype)
@@ -251,43 +272,98 @@ class StableDiffusion3Guidance(BaseObject):
             # predict the noise residual with transformer, NO grad!
             with torch.no_grad():
                 # add noise
-                noise = torch.randn_like(latents)  # TODO: use torch generator
-                latents_noisy = self.scheduler.add_noise(latents, noise, t)
+                noise = self.pipe.prepare_latents(
+                        1,
+                        latents.shape[1],
+                        self.height,
+                        self.width,
+                        latents.dtype,
+                        self.device,
+                        generator=None,
+                        latents=None,
+                    )
+                # TODO: use torch generator
+                sigma = self.scheduler.sigmas[1000-t.to(self.scheduler.sigmas.device)]
+                latents_noisy = sigma.to(noise.device) * noise \
+                    + (1 - sigma).to(latents.device) * latents
                 # pred noise
                 latent_model_input = torch.cat([latents_noisy] * 2, dim=0)
+                time_step = self.scheduler.timesteps[1000-t.to(self.scheduler.timesteps.device)].to(self.device)
                 noise_pred = self.forward_transformer(
                     latent_model_input,
-                    torch.cat([t] * 2),
+                    torch.cat([time_step] * 2),
                     encoder_hidden_states=text_embeddings,
                 )
 
             # perform guidance (high scale from paper!)
-            noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
+            noise_pred_uncond, noise_pred_text= noise_pred.chunk(2)
             noise_pred = noise_pred_text + self.cfg.guidance_scale * (
                 noise_pred_text - noise_pred_uncond
             )
 
         if self.cfg.weighting_strategy == "sds":
             # w(t), sigma_t^2
-            w = (1 - self.alphas[t]).view(-1, 1, 1, 1)
+            w = (1 - self.alphas[1000-t]).view(-1, 1, 1, 1)
         elif self.cfg.weighting_strategy == "uniform":
             w = 1
         elif self.cfg.weighting_strategy == "fantasia3d":
-            w = (self.alphas[t] ** 0.5 * (1 - self.alphas[t])).view(-1, 1, 1, 1)
+            w = (self.alphas[1000-t] ** 0.5 * (1 - self.alphas[1000-t])).view(-1, 1, 1, 1)
         else:
             raise ValueError(
                 f"Unknown weighting strategy: {self.cfg.weighting_strategy}"
             )
 
-        alpha = (self.alphas[t] ** 0.5).view(-1, 1, 1, 1)
-        sigma = ((1 - self.alphas[t]) ** 0.5).view(-1, 1, 1, 1)
+        alpha = (self.alphas[1000-t] ** 0.5).view(-1, 1, 1, 1)
+        sigma = ((1 - self.alphas[1000-t]) ** 0.5).view(-1, 1, 1, 1)
         latents_denoised = (latents_noisy - sigma * noise_pred) / alpha
         image_denoised = self.decode_latents(latents_denoised)
 
         # save image_denoised
         for i in range(batch_size):
             img = Image.fromarray((image_denoised[i].cpu().numpy() * 255).astype(np.uint8).transpose(1, 2, 0))
-            img.save(f"image_denoised_{i}.png")
+            # img.save(f"image_denoised_{i}.png")
+            img.save("image_denoised.png")
+
+
+        # with torch.no_grad():
+        #     stepped_latents = None
+        #     last_image = None
+        #     for i, time_step in enumerate(tqdm(self.scheduler.timesteps)):
+        #         if i > 0: 
+        #             if stepped_latents is None:
+        #                 # if there is already an image, we use the image latents with 
+        #                 sigma = self.scheduler.sigmas[i]
+        #                 input_latents = sigma * noise+ (1 - sigma) * latents
+        #             else:
+        #                 input_latents = stepped_latents
+        #             latent_model_input = torch.cat([input_latents] * 2)
+        #         else:
+        #             continue
+
+        #         # time_step = t.expand(latent_model_input.shape[0])
+        #         timestep_cond = None
+
+        #         noise_pred = self.forward_transformer(
+        #             latent_model_input,
+        #             time_step.expand(latent_model_input.shape[0]).to(latent_model_input.device),
+        #             encoder_hidden_states=text_embeddings,
+        #         )
+
+        #         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        #         noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (noise_pred_text - noise_pred_uncond)
+        #         stepped_latents = self.scheduler.step(noise_pred, time_step, input_latents, return_dict=False)[0]
+
+    
+
+        #         if i % 10 == 0 or i == len(self.scheduler.timesteps) - 1:
+        #             vis_image = self.pipe.vae.decode(stepped_latents /self.pipe.vae.config.scaling_factor, return_dict=False, generator=None)[0]
+        #             vis_image = vis_image*0.5 + 0.5 
+        #             if last_image is not None:
+        #                 a  = torch.sum(last_image - vis_image)
+        #             last_image = vis_image
+                
+        #             display_sample(vis_image, i, save_dir="visualizetion")
+
 
 
 
@@ -382,7 +458,7 @@ class StableDiffusion3Guidance(BaseObject):
                 )
 
                 # perform guidance (high scale from paper!)
-                noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_text + self.cfg.guidance_scale * (
                     noise_pred_text - noise_pred_uncond
                 )
@@ -420,9 +496,12 @@ class StableDiffusion3Guidance(BaseObject):
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         latents: Float[Tensor, "B 4 128 128"]
+        
         rgb_BCHW_512 = F.interpolate(
             rgb_BCHW, (self.height, self.width), mode="nearest"
         )
+        a = torch.min(rgb_BCHW_512)
+        b = torch.max(rgb_BCHW_512)
         if rgb_as_latents:
             latents = F.interpolate(
                 rgb_BCHW, (128, 128), mode="bilinear", align_corners=False
@@ -545,7 +624,7 @@ class StableDiffusion3Guidance(BaseObject):
                 encoder_hidden_states=text_embeddings,
             )
             # perform guidance (high scale from paper!)
-            noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_text + self.cfg.guidance_scale * (
                 noise_pred_text - noise_pred_uncond
             )
