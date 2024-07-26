@@ -1,17 +1,16 @@
 name: "mvdream-sd21-rescale0.5"
 tag: "${rmspace:${system.prompt_processor.prompt},_}"
-exp_root_dir: "outputs"
+exp_root_dir: "outputs/test"
 seed: 0
 
-data_type: "mvdream-consecutive-random-multiview-camera-datamodule"
+
+data_type: "mvdream-random-multiview-camera-datamodule"
 data:
-  # batch_size: [8,4]
   batch_size: [4,4]
   n_view: 4
   # 0-4999: 64x64, >=5000: 256x256
-
-  width: [96, 256]
-  height: [96, 256]
+  width: [64, 256]
+  height: [64, 256]
   resolution_milestones: [5000]
   camera_distance_range: [0.8, 1.0] # relative
   fovy_range: [15, 60]
@@ -22,7 +21,6 @@ data:
   n_val_views: 4
   eval_camera_distance: 3.0
   eval_fovy_deg: 40.
-  n_times: 1
 
 system_type: "partdream-system"
 system:
@@ -65,17 +63,15 @@ system:
     # num_samples_per_ray: 512
     num_samples_per_ray: 128
 
-
-  mllm_optimize_prompt: False
   
   use_global_attn: True
   global_model_name: stabilityai/stable-diffusion-3-medium-diffusers
-  attention_guidance_start_step: 500
-  attention_guidance_interval: 2000
-  attention_guidance_timestep_start: 650
+  attention_guidance_start_step: 50
+  attention_guidance_timestep_start: 450
   attention_guidance_timestep_end: 100
-  attention_guidance_free_style_timestep_start: 800
-  use_crf: True
+  attention_guidance_free_style_timestep_start: 700
+  record_attention_interval: 20
+  use_crf: False
   cross_attention_scale: 0.8
   self_attention_scale: 1.4
 
@@ -84,9 +80,7 @@ system:
   prompt_processor_type: "stable-diffusion-prompt-processor"
 
 
-  prompt: ???
   prompt_save_path: "custom/threestudio-mvdream/system/mllm_optimizer/intermediate_save"
-  iteration_num: 3
   api_key: ???
   cache_dir: "/homes/55/runjia/scratch/diffusion_model_weights"
 
@@ -108,26 +102,8 @@ system:
     max_step_percent: [0, 0.98, 0.50, 8000]
     recon_loss: true
     recon_std_rescale: 0.5
-    use_cpu_offload: False
+    use_cpu_offload: True
 
-
-  part_expert_prompt_processor_type: "deep-floyd-prompt-processor"
-  part_expert_prompt_processor:
-    prompt: place_holder
-    negative_prompt: "hollow space, gaps, ugly, bad anatomy, blurry, pixelated obscure, unnatural colors, poor lighting, dull, and unclear, cropped, lowres, low quality, artifacts, duplicate, morbid, mutilated, poorly drawn face, deformed, dehydrated, bad proportions, disconnected"
-
-
-  part_expert_guidance_type: "deep-floyd-guidance"
-  part_expert_guidance:
-    enable_memory_efficient_attention: True
-    enable_sequential_cpu_offload: True
-
-
-
-
-
-  use_part_expert: False
-  # use_2d_recentering: True
 
 
   visualize: False

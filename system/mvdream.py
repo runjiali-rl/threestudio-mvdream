@@ -17,6 +17,7 @@ from .cross_attention import get_attn_maps_sd3, DenseCRF, crf_refine, attn_map_p
 from diffusers import DiffusionPipeline
 from collections import defaultdict
 from transformers import AutoTokenizer
+import pickle
 
 
 
@@ -33,10 +34,382 @@ def smooth_loss(inputs):
     L3 = torch.mean(torch.abs((inputs[:,:-1,:-1] - inputs[:,1:,1:])))
     L4 = torch.mean(torch.abs((inputs[:,1:,:-1] - inputs[:,:-1,1:])))
     return (L1 + L2 + L3 + L4) / 4
-  
+
 
 @threestudio.register("partdream-system")
 class PartDreamSystem(BaseLift3DSystem):
+    @dataclass
+    class Config(BaseLift3DSystem.Config):
+        prompt_save_path: str = ""
+        cache_dir: str = None
+        save_dir: str = ""
+        api_key: str = ""
+
+
+        # global guidance model names
+        use_global_attn: bool = False
+        global_model_name: str = "stable-diffusion-3-medium-diffusers"
+        attention_guidance_start_step: int = 1000
+        attention_guidance_timestep_start:int = 850
+        attention_guidance_timestep_end:int = 400
+        attention_guidance_free_style_timestep_start:int = 500
+        record_attention_interval: int = 10
+
+        use_crf: bool = False
+
+        cross_attention_scale: float = 1.0
+        self_attention_scale: float = 1.0
+
+        visualize: bool = False
+        visualize_save_dir: str = ""
+
+
+    cfg: Config
+
+    def configure(self) -> None:
+        # set up geometry, material, background, renderer
+        super().configure()
+
+        self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
+        set_forward_mvdream(self.guidance.model)
+
+        self.attention_guidance_prompt = self.cfg.prompt_processor.prompt
+        self.attention_guidance_negative_prompt = self.cfg.prompt_processor.negative_prompt
+
+        self.part_prompts = animal_part_extractor(self.cfg.prompt_processor.prompt, api_key=self.cfg.api_key)
+        self.index_by_part = {}
+
+        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
+            self.cfg.prompt_processor
+        )
+        self.prompt_utils = self.prompt_processor()
+        self.guidance_tokenizer = AutoTokenizer.from_pretrained(self.cfg.prompt_processor.pretrained_model_name_or_path,
+                                                                subfolder="tokenizer")
+        self.part_token_index_list = []
+        for part_prompt in self.part_prompts:
+            token_index_list = self.get_token_index(self.guidance_tokenizer, self.cfg.prompt_processor.prompt, part_prompt)
+            self.part_token_index_list.append(token_index_list)
+
+
+
+        file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
+        save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
+        # initialize the global guidance model
+        if not os.path.exists(save_path):
+            self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
+                                                            use_safetensors=True,
+                                                            torch_dtype=torch.float16,
+                                                            cache_dir=self.cfg.cache_dir)
+            set_forward_sd3(self.global_model.transformer)
+            register_cross_attention_hook(self.global_model.transformer)
+            self.global_model = self.global_model.to("cuda")
+            self.global_model.enable_model_cpu_offload()
+        else:
+            self.global_model = None
+        self.postprocessor = DenseCRF(
+            iter_max=10,
+            pos_xy_std=1,
+            pos_w=3,
+            bi_xy_std=67,
+            bi_rgb_std=3,
+            bi_w=4,
+        )
+        self.attn_map_info = defaultdict(list)
+
+
+    def get_token_index(self,
+                        tokenizer,
+                        prompt:str,
+                        sub_prompt:str):
+        """
+        Get the token index of the sub_prompt in the prompt
+        args:
+        tokenizer: the tokenizer
+        prompt: str, the prompt
+        sub_prompt: str, the sub_prompt
+
+        return:
+        token_index_list: List[int], the list of token index
+        """
+        tokens = prompt2tokens(tokenizer, prompt)
+        sub_tokens = prompt2tokens(tokenizer, sub_prompt)
+        bos_token = tokenizer.bos_token
+        eos_token = tokenizer.eos_token
+        pad_token = tokenizer.pad_token
+        token_index_list = []
+        for idx, token in enumerate(tokens):
+            if token == eos_token:
+                break
+            if token in [bos_token, pad_token]:
+                continue
+            if token in sub_tokens:
+                token_index_list.append(idx)
+        return token_index_list
+    
+                        
+
+    def get_attn_maps_sd3(self,
+                          images=None,
+                          use_crf:bool = False,
+                          device="cuda"):
+        """
+        Get the attention maps from the global guidance model
+        args:
+
+        images: torch.Tensor, shape (B, H, W, 3)
+        use_crf: bool, whether to use crf to refine the attention maps
+
+        return:
+        attn_map_by_tokens: Dict[str, torch.Tensor], shape (B, num_tokens, H, W)
+        """
+        
+        with torch.no_grad():
+         # if the global model is half precision, convert the image to half precision
+            view_suffix = ["back view", "side view", "front view", "side view"] * int(images.shape[0] / 4)
+            attn_map_by_tokens = defaultdict(list)
+            file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
+            save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
+            if os.path.exists(save_path):
+                attn_map_by_tokens = torch.load(save_path)
+                return attn_map_by_tokens
+            if images is not None:
+                images = images.to(self.global_model.dtype)
+            else:
+                images = [None] * 4
+            for idx, image in enumerate(images):
+                # convert image to PIL image
+                if image is not None:
+                    image = Image.fromarray((image.cpu().detach().numpy()*255).astype(np.uint8))
+                    if self.cfg.visualize:
+                        image.save(os.path.join(self.cfg.visualize_save_dir, f"image_{idx}.png"))
+
+                suffix = view_suffix[idx]
+                prompt = self.attention_guidance_prompt + ", " + suffix
+                output = get_attn_maps_sd3(model=self.global_model,
+                                prompt=prompt,
+                                negative_prompt=None,
+                                only_animal_names=True,
+                                animal_names=self.part_prompts,
+                                image=image,
+                                timestep_start=self.cfg.attention_guidance_timestep_start,
+                                timestep_end=self.cfg.attention_guidance_timestep_end,
+                                free_style_timestep_start=self.cfg.attention_guidance_free_style_timestep_start,
+                                save_by_timestep=True,
+                                save_dir=self.cfg.visualize_save_dir,
+                                api_key=self.cfg.api_key,
+                                normalize=True,)
+            
+                attn_map_by_token = output['attn_map_by_token']
+                if use_crf:
+                    diffused_image = output['diffused_image']
+
+                    probmaps, _ = crf_refine(diffused_image,
+                                            attn_map_by_token,
+                                            self.postprocessor,
+                                            save_dir=self.cfg.visualize_save_dir)
+
+
+                    attn_map_by_token = attn_map_postprocess(probmaps,
+                                            attn_map_by_token,
+                                            amplification_factor=2,
+                                            save_dir=self.cfg.visualize_save_dir,)
+                
+                for key, value in attn_map_by_token.items():
+                    value = torch.tensor(value)
+                    scale = torch.sum(torch.ones_like(value)) / torch.sum(value)
+                    value = value * scale
+                    self.attn_map_info[key].append(value)
+
+            del attn_map_by_token
+
+
+
+    def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        return self.renderer(**batch)
+
+    def training_step(self, batch, batch_idx):
+        out = self(batch)
+        guidance_out = self.guidance(out["comp_rgb"],
+                                     self.prompt_utils,
+                                     token_index=self.part_token_index_list,
+                                     cross_attention_scale=self.cfg.cross_attention_scale,
+                                     self_attention_scale=self.cfg.self_attention_scale,
+                                     **batch)
+        
+        # get the global attention map
+        if self.cfg.use_global_attn and batch_idx > self.cfg.attention_guidance_start_step and \
+            batch_idx < self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval:
+
+
+            self.get_attn_maps_sd3(images=out["comp_rgb"],
+                                    use_crf=self.cfg.use_crf)
+            for key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    if isinstance(value, torch.Tensor):
+                        for cam2world in value:
+                            self.attn_map_info[key].append(cam2world.detach().cpu())
+                   
+        
+        if batch_idx == self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval and self.cfg.use_global_attn:
+            for key, value in self.attn_map_info.items():
+                self.attn_map_info[key] = torch.stack(value)
+            
+            attn_file_name = self.attention_guidance_prompt.replace(" ", "_")+"attn.pth"
+            attn_save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", attn_file_name)
+            torch.save(self.attn_map_info, attn_save_path)
+
+
+
+            stop = 1
+
+
+
+        loss = 0.0
+        
+
+        for name, value in guidance_out.items():
+            self.log(f"train/{name}", value)
+            if name.startswith("loss_"):
+                loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
+
+
+        if self.C(self.cfg.loss.lambda_orient) > 0:
+            if "normal" not in out:
+                raise ValueError(
+                    "Normal is required for orientation loss, no normal is found in the output."
+                )
+            loss_orient = (
+                out["weights"].detach()
+                * dot(out["normal"], out["t_dirs"]).clamp_min(0.0) ** 2
+            ).sum() / (out["opacity"] > 0).sum()
+            self.log("train/loss_orient", loss_orient)
+            loss += loss_orient * self.C(self.cfg.loss.lambda_orient)
+
+        if self.C(self.cfg.loss.lambda_sparsity) > 0:
+            loss_sparsity = (out["opacity"] ** 2 + 0.01).sqrt().mean()
+            self.log("train/loss_sparsity", loss_sparsity)
+            loss += loss_sparsity * self.C(self.cfg.loss.lambda_sparsity)
+
+        if self.C(self.cfg.loss.lambda_opaque) > 0:
+            opacity_clamped = out["opacity"].clamp(1.0e-3, 1.0 - 1.0e-3)
+            loss_opaque = binary_cross_entropy(opacity_clamped, opacity_clamped)
+            self.log("train/loss_opaque", loss_opaque)
+            loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
+
+        # z variance loss proposed in HiFA: http://arxiv.org/abs/2305.18766
+        # helps reduce floaters and produce solid geometry
+        if self.C(self.cfg.loss.lambda_z_variance) > 0:
+            loss_z_variance = out["z_variance"][out["opacity"] > 0.5].mean()
+            self.log("train/loss_z_variance", loss_z_variance)
+            loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
+
+        if (
+            hasattr(self.cfg.loss, "lambda_eikonal")
+            and self.C(self.cfg.loss.lambda_eikonal) > 0
+        ):
+            loss_eikonal = (
+                (torch.linalg.norm(out["sdf_grad"], ord=2, dim=-1) - 1.0) ** 2
+            ).mean()
+            self.log("train/loss_eikonal", loss_eikonal)
+            loss += loss_eikonal * self.C(self.cfg.loss.lambda_eikonal)
+
+        for name, value in self.cfg.loss.items():
+            self.log(f"train_params/{name}", self.C(value))
+
+        return {"loss": loss}
+
+    def validation_step(self, batch, batch_idx):
+        out = self(batch)
+        self.save_image_grid(
+            f"it{self.true_global_step}-{batch['index'][0]}.png",
+            (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_rgb"][0],
+                        "kwargs": {"data_format": "HWC"},
+                    },
+                ]
+                if "comp_rgb" in out
+                else []
+            )
+            + (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_normal"][0],
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    }
+                ]
+                if "comp_normal" in out
+                else []
+            )
+            + [
+                {
+                    "type": "grayscale",
+                    "img": out["opacity"][0, :, :, 0],
+                    "kwargs": {"cmap": None, "data_range": (0, 1)},
+                },
+            ],
+            name="validation_step",
+            step=self.true_global_step,
+        )
+
+    def on_validation_epoch_end(self):
+        pass
+
+    def test_step(self, batch, batch_idx):
+        out = self(batch)
+        self.save_image_grid(
+            f"it{self.true_global_step}-test/{batch['index'][0]}.png",
+            (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_rgb"][0],
+                        "kwargs": {"data_format": "HWC"},
+                    },
+                ]
+                if "comp_rgb" in out
+                else []
+            )
+            + (
+                [
+                    {
+                        "type": "rgb",
+                        "img": out["comp_normal"][0],
+                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+                    }
+                ]
+                if "comp_normal" in out
+                else []
+            )
+            + [
+                {
+                    "type": "grayscale",
+                    "img": out["opacity"][0, :, :, 0],
+                    "kwargs": {"cmap": None, "data_range": (0, 1)},
+                },
+            ],
+            name="test_step",
+            step=self.true_global_step,
+        )
+
+    def on_test_epoch_end(self):
+        self.save_img_sequence(
+            f"it{self.true_global_step}-test",
+            f"it{self.true_global_step}-test",
+            "(\d+)\.png",
+            save_format="mp4",
+            fps=30,
+            name="test",
+            step=self.true_global_step,
+        )
+
+
+
+@threestudio.register("partdream-gaussian-system")
+class PartDreamGaussianSystem(BaseLift3DSystem):
     @dataclass
     class Config(BaseLift3DSystem.Config):
         visualize_samples: bool = False
@@ -46,13 +419,7 @@ class PartDreamSystem(BaseLift3DSystem):
         cache_dir: str = None
         save_dir: str = ""
         api_key: str = ""
-        use_part_expert: bool = False
 
-        # part expert guidance model names
-        part_expert_guidance_type: str = ""
-        part_expert_guidance: dict = field(default_factory=dict)
-        part_expert_prompt_processor_type: str = ""
-        part_expert_prompt_processor: dict = field(default_factory=dict)
 
         # global guidance model names
         use_global_attn: bool = False
@@ -158,7 +525,8 @@ class PartDreamSystem(BaseLift3DSystem):
             bi_rgb_std=3,
             bi_w=4,
         )
-        self.attn_map_by_token = None
+        self.attn_map_by_token = defaultdict(list)
+        self.attn_map_batches = []
 
 
         

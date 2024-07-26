@@ -817,6 +817,7 @@ def display_sample(image, i, save_dir):
     if isinstance(image, PIL.Image.Image):
         image_pil = image
     else:
+        image = image*0.5 + 0.5
         image = image.permute(0, 2, 3, 1)
         image = image.cpu().detach().numpy()
         image_processed = (image * 255).clip(0, 255)
