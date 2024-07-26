@@ -754,8 +754,6 @@ def get_attn_maps(prompt: str,
 
     # get the max length of different tokenizers
 
-    max_length = tokenizer.model_max_length
-
     attn_map_by_token = defaultdict(list)
 
     # match with tokens
@@ -773,7 +771,7 @@ def get_attn_maps(prompt: str,
         elif animal_part_list is not None:
             for animal_part in animal_part_list:
                 if token in animal_part.split(" "):
-                    token_attn_map = resized_map[i + max_length]
+                    token_attn_map = resized_map[i]
                     if normalize:
                         normalized_token_attn_map = (token_attn_map - torch.min(token_attn_map)) / (torch.max(token_attn_map) - torch.min(token_attn_map))
                         normalized_token_attn_map = increase_contrast(normalized_token_attn_map)
@@ -781,7 +779,7 @@ def get_attn_maps(prompt: str,
                         normalized_token_attn_map = (token_attn_map - min_value) / (max_value - min_value)
                     attn_map_by_token[animal_part].append(normalized_token_attn_map)    
         else:
-            token_attn_map = resized_map[i + max_length]
+            token_attn_map = resized_map[i]
             # min-max normalization(for visualization purpose)
   
             if normalize:
