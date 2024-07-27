@@ -63,6 +63,8 @@ class PartDreamSystem(BaseLift3DSystem):
         visualize: bool = False
         visualize_save_dir: str = ""
 
+        attention_system: defaultdict = field(default_factory=defaultdict)
+
 
     cfg: Config
 
@@ -115,6 +117,20 @@ class PartDreamSystem(BaseLift3DSystem):
             bi_w=4,
         )
         self.attn_map_info = defaultdict(list)
+
+
+        self.attn_geometry = threestudio.find(self.cfg.attention_system.geometry_type)(self.cfg.attention_system.geometry)
+
+        self.attn_material = threestudio.find(self.cfg.attention_system.material_type)(self.cfg.attention_system.material)
+        self.attn_background = threestudio.find(self.cfg.attention_system.background_type)(
+            self.cfg.attention_system.background
+        )
+        self.attn_renderer = threestudio.find(self.cfg.attention_systemrenderer_type)(
+            self.cfg.attention_system.renderer,
+            geometry=self.attn_geometry,
+            material=self.attn_material,
+            background=self.attn_background,
+        )
 
 
     def get_token_index(self,
