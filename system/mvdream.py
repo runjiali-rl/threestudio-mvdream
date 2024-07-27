@@ -238,7 +238,7 @@ class PartDreamSystem(BaseLift3DSystem):
         
         # get the global attention map
         if self.cfg.use_global_attn and batch_idx > self.cfg.attention_guidance_start_step and \
-            batch_idx < self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval:
+            batch_idx < (self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval):
 
 
             self.get_attn_maps_sd3(images=out["comp_rgb"],
@@ -250,7 +250,7 @@ class PartDreamSystem(BaseLift3DSystem):
                             self.attn_map_info[key].append(cam2world.detach().cpu())
                    
         
-        if batch_idx == self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval and self.cfg.use_global_attn:
+        if batch_idx == (self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval) and self.cfg.use_global_attn:
             for key, value in self.attn_map_info.items():
                 self.attn_map_info[key] = torch.stack(value)
             
