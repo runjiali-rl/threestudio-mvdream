@@ -252,8 +252,10 @@ class PartDreamSystem(BaseLift3DSystem):
         if self.cfg.use_global_attn:
             if not os.path.exists(self.attn_save_path):
                 if batch_idx >= self.record_attention_start and batch_idx < self.record_attention_end:
-
-
+                    out = self(batch)
+                    guidance_out = self.guidance(out["comp_rgb"],
+                                        self.prompt_utils,
+                                        **batch)
                     self.get_attn_maps_sd3(images=out["comp_rgb"],
                                             use_crf=self.cfg.use_crf)
                     for key, value in batch.items():
