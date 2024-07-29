@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 import threestudio
 import torch
 from threestudio.systems.base import BaseLift3DSystem
-from threestudio.utils.misc import cleanup, get_device
 from threestudio.utils.ops import binary_cross_entropy, dot
 from threestudio.utils.typing import *
 import numpy as np
@@ -17,7 +16,6 @@ from .cross_attention import get_attn_maps_sd3, DenseCRF, crf_refine, attn_map_p
 from diffusers import DiffusionPipeline
 from collections import defaultdict
 from transformers import AutoTokenizer
-import pickle
 
 
 
@@ -54,6 +52,7 @@ class PartDreamSystem(BaseLift3DSystem):
         attention_guidance_timestep_end:int = 400
         attention_guidance_free_style_timestep_start:int = 500
         record_attention_interval: int = 10
+        attntion_nerf_train_interval: int = 2000
 
         use_crf: bool = False
 
@@ -94,10 +93,10 @@ class PartDreamSystem(BaseLift3DSystem):
 
 
 
-        file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
-        save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
+        attn_file_name = self.attention_guidance_prompt.replace(" ", "_")+"attn.pth"
+        self.attn_save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", attn_file_name)
         # initialize the global guidance model
-        if not os.path.exists(save_path):
+        if not os.path.exists(self.attn_save_path):
             self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
                                                             use_safetensors=True,
                                                             torch_dtype=torch.float16,
@@ -117,6 +116,8 @@ class PartDreamSystem(BaseLift3DSystem):
             bi_w=4,
         )
         self.attn_map_info = defaultdict(list)
+        self.attn_map_batches = defaultdict(list)
+        self.attn_map_by_token = defaultdict(list)
 
 
         self.attn_geometry = threestudio.find(self.cfg.attention_system.geometry_type)(self.cfg.attention_system.geometry)
@@ -125,12 +126,18 @@ class PartDreamSystem(BaseLift3DSystem):
         self.attn_background = threestudio.find(self.cfg.attention_system.background_type)(
             self.cfg.attention_system.background
         )
-        self.attn_renderer = threestudio.find(self.cfg.attention_systemrenderer_type)(
+        self.attn_renderer = threestudio.find(self.cfg.attention_system.renderer_type)(
             self.cfg.attention_system.renderer,
             geometry=self.attn_geometry,
             material=self.attn_material,
             background=self.attn_background,
         )
+
+        # iteration setting:
+        self.record_attention_start = self.cfg.attention_guidance_start_step
+        self.record_attention_end = self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval
+        self.attn_nerf_optimize_start = self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval
+        self.attn_nerf_optimize_end = self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval + self.cfg.attntion_nerf_train_interval
 
 
     def get_token_index(self,
@@ -183,11 +190,6 @@ class PartDreamSystem(BaseLift3DSystem):
          # if the global model is half precision, convert the image to half precision
             view_suffix = ["back view", "side view", "front view", "side view"] * int(images.shape[0] / 4)
             attn_map_by_tokens = defaultdict(list)
-            file_name = self.attention_guidance_prompt.replace(" ", "_")+".pth"
-            save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", file_name)
-            if os.path.exists(save_path):
-                attn_map_by_tokens = torch.load(save_path)
-                return attn_map_by_tokens
             if images is not None:
                 images = images.to(self.global_model.dtype)
             else:
@@ -244,93 +246,183 @@ class PartDreamSystem(BaseLift3DSystem):
         return self.renderer(**batch)
 
     def training_step(self, batch, batch_idx):
-        out = self(batch)
-        guidance_out = self.guidance(out["comp_rgb"],
-                                     self.prompt_utils,
-                                     token_index=self.part_token_index_list,
-                                     cross_attention_scale=self.cfg.cross_attention_scale,
-                                     self_attention_scale=self.cfg.self_attention_scale,
-                                     **batch)
-        
-        # get the global attention map
-        if self.cfg.use_global_attn and batch_idx > self.cfg.attention_guidance_start_step and \
-            batch_idx < (self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval):
-
-
-            self.get_attn_maps_sd3(images=out["comp_rgb"],
-                                    use_crf=self.cfg.use_crf)
-            for key, value in batch.items():
-                if isinstance(value, torch.Tensor):
-                    if isinstance(value, torch.Tensor):
-                        for cam2world in value:
-                            self.attn_map_info[key].append(cam2world.detach().cpu())
-                   
-        
-        if batch_idx == (self.cfg.attention_guidance_start_step + self.cfg.record_attention_interval) and self.cfg.use_global_attn:
-            for key, value in self.attn_map_info.items():
-                self.attn_map_info[key] = torch.stack(value)
-            
-            attn_file_name = self.attention_guidance_prompt.replace(" ", "_")+"attn.pth"
-            attn_save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", attn_file_name)
-            torch.save(self.attn_map_info, attn_save_path)
-
-
-
-            stop = 1
-
-
-
         loss = 0.0
+
+        # get the global attention map
+        if self.cfg.use_global_attn:
+            if not os.path.exists(self.attn_save_path):
+                if batch_idx >= self.record_attention_start and batch_idx < self.record_attention_end:
+
+
+                    self.get_attn_maps_sd3(images=out["comp_rgb"],
+                                            use_crf=self.cfg.use_crf)
+                    for key, value in batch.items():
+                        if isinstance(value, torch.Tensor):
+                            if isinstance(value, torch.Tensor):
+                                for cam2world in value:
+                                    self.attn_map_info[key].append(cam2world.detach().cpu())
+                        
+                
+                if self.cfg.use_global_attn and batch_idx == self.attn_nerf_optimize_start:
+                    for key, value in self.attn_map_info.items():
+                        self.attn_map_info[key] = torch.stack(value)
+                    
+                    attn_file_name = self.attention_guidance_prompt.replace(" ", "_")+"attn.pth"
+                    attn_save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", attn_file_name)
+                    print("Save the attention map")
+                    torch.save(self.attn_map_info, attn_save_path)
+                    
+
+            # load the attention map
+            if batch_idx == self.attn_nerf_optimize_start:
+                print("Load the attention map")
+                self.attn_map_info = torch.load(self.attn_save_path)
+                
+                for key, value in self.attn_map_info.items():
+                    if key in list(batch.keys()):
+                        self.attn_map_batches[key] = value
+                    else:
+                        self.attn_map_by_token[key] = value
+                        
+
+            # optimize the attention nerf model
+            if batch_idx > self.attn_nerf_optimize_start and batch_idx < self.attn_nerf_optimize_end:
+                batch_size = batch["c2w"].shape[0]*2
+                sample_num = len(self.attn_map_batches[list(self.attn_map_batches.keys())[0]])
+
+                # sample batch_size number of random index
+                attn_nerf_batch_idx = np.random.randint(0, sample_num, batch_size)
+
+                attn_batch = {}
+                attn_map_gt = []
+                for key, value in self.attn_map_batches.items():
+                    attn_batch[key] = value[attn_nerf_batch_idx].to(batch["c2w"].device)
+                for key, value in self.attn_map_by_token.items():
+                    value = value[attn_nerf_batch_idx].to(batch["c2w"].device)
+                    # resize the attention map
+                    value = F.interpolate(value.unsqueeze(1), (64, 64), mode="bilinear", align_corners=False).squeeze(1) # TODO fix hardcoding
+                    attn_map_gt.append((value - torch.min(value)) / (torch.max(value) - torch.min(value)))
+                attn_map_gt = torch.stack(attn_map_gt, dim=-1)
+
+            
+                attn_batch["width"] = batch["width"]
+                attn_batch["height"] = batch["height"]
+
+                
+                attn_out = self.attn_renderer(**attn_batch)
+
+                attn_map_num = attn_map_gt.shape[-1]
+                rendered_attn = attn_out["comp_rgb"][:, :, :, :attn_map_num] 
+                # compute softmax over the last dimension
+                # rendered_attn = F.softmax(rendered_attn, dim=-1)
+                # get the l2 loss
+                loss_attn = F.mse_loss(rendered_attn, attn_map_gt)
+
+                loss += loss_attn * self.C(1)
+
+                for view_idx, (_attn_maps, _attn_map_gts) in enumerate(zip(rendered_attn, attn_map_gt)):
+                    # save the rendered attention map as Image
+                    _attn_maps = _attn_maps.permute(2, 0, 1).detach().cpu().numpy()
+                    for part_idx, _attn_map in enumerate(_attn_maps):
+                        _attn_map = (_attn_map - np.min(_attn_map)) / (np.max(_attn_map) - np.min(_attn_map))
+                        _attn_map = (_attn_map * 255).astype(np.uint8)
+                        _attn_map = cv2.applyColorMap(_attn_map, cv2.COLORMAP_JET)
+                        cv2.imwrite(os.path.join(self.cfg.visualize_save_dir, f"attn_{view_idx}_{part_idx}.png"), _attn_map)
+
+                    # save the ground truth attention map as Image
+                    _attn_map_gts = _attn_map_gts.permute(2, 0, 1).detach().cpu().numpy()
+                    for part_idx, _attn_map_gt in enumerate(_attn_map_gts):
+                        _attn_map_gt = (_attn_map_gt - np.min(_attn_map_gt)) / (np.max(_attn_map_gt) - np.min(_attn_map_gt))
+                        _attn_map_gt = (_attn_map_gt * 255).astype(np.uint8)
+                        _attn_map_gt = cv2.applyColorMap(_attn_map_gt, cv2.COLORMAP_JET)
+                        cv2.imwrite(os.path.join(self.cfg.visualize_save_dir, f"attn_gt_{view_idx}_{part_idx}.png"), _attn_map_gt)
+                    
+                    stop = 1
+                
+
+            else:
+                if batch_idx <= self.attn_nerf_optimize_end:
+                    mask = None
+
+                elif batch_idx >= self.attn_nerf_optimize_end:
+                    with torch.no_grad():
+                        attn_map_num = len(self.part_prompts)
+                        rendered_attn = self.attn_renderer(**batch)
+                        rendered_attn = rendered_attn["comp_rgb"][:, :, :, :attn_map_num] # 4 x H x W x num_parts
+                        rendered_attn = rendered_attn.permute(3, 0, 1, 2) # num_parts x 4 x H x W
+                        mask = {}
+                        for part_name, attn_map in zip(self.part_prompts, rendered_attn):
+                            mask[part_name] = attn_map
+                        
+                        stop = 1
+
+                out = self(batch)
+                guidance_out = self.guidance(out["comp_rgb"],
+                            self.prompt_utils,
+                            mask = mask,
+                            token_index=self.part_token_index_list,
+                            cross_attention_scale=self.cfg.cross_attention_scale,
+                            self_attention_scale=self.cfg.self_attention_scale,
+                            **batch)
+               
+        # normal mvdream process
+        else:
+            out = self(batch)
+            guidance_out = self.guidance(out["comp_rgb"],
+                                        self.prompt_utils,
+                                        **batch)
+
+
         
+        if batch_idx <= self.attn_nerf_optimize_start or batch_idx >= self.attn_nerf_optimize_end:
+            for name, value in guidance_out.items():
+                self.log(f"train/{name}", value)
+                if name.startswith("loss_"):
+                    loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
 
-        for name, value in guidance_out.items():
-            self.log(f"train/{name}", value)
-            if name.startswith("loss_"):
-                loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
 
+            if self.C(self.cfg.loss.lambda_orient) > 0:
+                if "normal" not in out:
+                    raise ValueError(
+                        "Normal is required for orientation loss, no normal is found in the output."
+                    )
+                loss_orient = (
+                    out["weights"].detach()
+                    * dot(out["normal"], out["t_dirs"]).clamp_min(0.0) ** 2
+                ).sum() / (out["opacity"] > 0).sum()
+                self.log("train/loss_orient", loss_orient)
+                loss += loss_orient * self.C(self.cfg.loss.lambda_orient)
 
-        if self.C(self.cfg.loss.lambda_orient) > 0:
-            if "normal" not in out:
-                raise ValueError(
-                    "Normal is required for orientation loss, no normal is found in the output."
-                )
-            loss_orient = (
-                out["weights"].detach()
-                * dot(out["normal"], out["t_dirs"]).clamp_min(0.0) ** 2
-            ).sum() / (out["opacity"] > 0).sum()
-            self.log("train/loss_orient", loss_orient)
-            loss += loss_orient * self.C(self.cfg.loss.lambda_orient)
+            if self.C(self.cfg.loss.lambda_sparsity) > 0:
+                loss_sparsity = (out["opacity"] ** 2 + 0.01).sqrt().mean()
+                self.log("train/loss_sparsity", loss_sparsity)
+                loss += loss_sparsity * self.C(self.cfg.loss.lambda_sparsity)
 
-        if self.C(self.cfg.loss.lambda_sparsity) > 0:
-            loss_sparsity = (out["opacity"] ** 2 + 0.01).sqrt().mean()
-            self.log("train/loss_sparsity", loss_sparsity)
-            loss += loss_sparsity * self.C(self.cfg.loss.lambda_sparsity)
+            if self.C(self.cfg.loss.lambda_opaque) > 0:
+                opacity_clamped = out["opacity"].clamp(1.0e-3, 1.0 - 1.0e-3)
+                loss_opaque = binary_cross_entropy(opacity_clamped, opacity_clamped)
+                self.log("train/loss_opaque", loss_opaque)
+                loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
 
-        if self.C(self.cfg.loss.lambda_opaque) > 0:
-            opacity_clamped = out["opacity"].clamp(1.0e-3, 1.0 - 1.0e-3)
-            loss_opaque = binary_cross_entropy(opacity_clamped, opacity_clamped)
-            self.log("train/loss_opaque", loss_opaque)
-            loss += loss_opaque * self.C(self.cfg.loss.lambda_opaque)
+            # z variance loss proposed in HiFA: http://arxiv.org/abs/2305.18766
+            # helps reduce floaters and produce solid geometry
+            if self.C(self.cfg.loss.lambda_z_variance) > 0:
+                loss_z_variance = out["z_variance"][out["opacity"] > 0.5].mean()
+                self.log("train/loss_z_variance", loss_z_variance)
+                loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
 
-        # z variance loss proposed in HiFA: http://arxiv.org/abs/2305.18766
-        # helps reduce floaters and produce solid geometry
-        if self.C(self.cfg.loss.lambda_z_variance) > 0:
-            loss_z_variance = out["z_variance"][out["opacity"] > 0.5].mean()
-            self.log("train/loss_z_variance", loss_z_variance)
-            loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
+            if (
+                hasattr(self.cfg.loss, "lambda_eikonal")
+                and self.C(self.cfg.loss.lambda_eikonal) > 0
+            ):
+                loss_eikonal = (
+                    (torch.linalg.norm(out["sdf_grad"], ord=2, dim=-1) - 1.0) ** 2
+                ).mean()
+                self.log("train/loss_eikonal", loss_eikonal)
+                loss += loss_eikonal * self.C(self.cfg.loss.lambda_eikonal)
 
-        if (
-            hasattr(self.cfg.loss, "lambda_eikonal")
-            and self.C(self.cfg.loss.lambda_eikonal) > 0
-        ):
-            loss_eikonal = (
-                (torch.linalg.norm(out["sdf_grad"], ord=2, dim=-1) - 1.0) ** 2
-            ).mean()
-            self.log("train/loss_eikonal", loss_eikonal)
-            loss += loss_eikonal * self.C(self.cfg.loss.lambda_eikonal)
-
-        for name, value in self.cfg.loss.items():
-            self.log(f"train_params/{name}", self.C(value))
+            for name, value in self.cfg.loss.items():
+                self.log(f"train_params/{name}", self.C(value))
 
         return {"loss": loss}
 

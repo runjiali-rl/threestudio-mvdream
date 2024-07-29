@@ -239,24 +239,14 @@ def attention(query, key, value,
     if attn_mask is not None:
         if has_context:
             for idx, attn_mask_ in enumerate(attn_mask):
-                a = torch.max(attn_mask_)
-                b = torch.mean(attn_mask_)
                 attn_mask_ = attn_mask_/torch.sum(attn_mask_)*torch.sum(torch.ones_like(attn_mask_))
                 attn_mask_ = torch.log(attn_mask_ + 1e-9)
-                c = torch.max(attn_mask_)
-                d = torch.mean(attn_mask_)
                 token_indexes_ = token_index[idx]
                 for token_index_ in token_indexes_:
                     attn[:, :, token_index_] = attn[:,  :, token_index_] + (attn_mask_.to(attn.device).to(attn.dtype)*cross_attention_scale)
         else:
-            for idx, attn_mask_ in enumerate(attn_mask):
-                a = torch.max(attn_mask_)
-                b = torch.mean(attn_mask_)
-             
+            for idx, attn_mask_ in enumerate(attn_mask):             
                 attn_mask_ = torch.log(attn_mask_ + 1e-9)
-                c = torch.max(attn_mask_)
-                d = torch.mean(attn_mask_)
-      
                 attn= attn + (attn_mask_.to(attn.device).to(attn.dtype)*self_attention_scale)
     attn = attn.softmax(-1)
     attn = F.dropout(attn, p)
