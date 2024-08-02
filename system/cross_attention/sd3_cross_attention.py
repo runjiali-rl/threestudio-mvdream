@@ -1003,6 +1003,8 @@ def animal_part_extractor(prompt, api_key, max_trial=100):
 
 def check_animal_part(animal_part_list, prompt):
     for animal_part in animal_part_list:
+        if not len(animal_part.split(" ")) == 2:
+            return False
         for token in prompt.split(" "):
             if token in animal_part:
                 return True

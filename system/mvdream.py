@@ -590,6 +590,7 @@ class PartDreamGaussianSystem(BaseLift3DSystem):
             self.attention_guidance_negative_prompt = self.cfg.prompt_processor.negative_prompt
 
         self.part_prompts = animal_part_extractor(self.cfg.prompt, api_key=self.cfg.api_key)
+        print("=============\n animal parts extracted: ", self.part_prompts)
         self.index_by_part = {}
 
         self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
