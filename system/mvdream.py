@@ -76,8 +76,33 @@ class PartDreamSystem(BaseLift3DSystem):
 
         self.attention_guidance_prompt = self.cfg.prompt_processor.prompt
         self.attention_guidance_negative_prompt = self.cfg.prompt_processor.negative_prompt
-
-        self.part_prompts = animal_part_extractor(self.cfg.prompt_processor.prompt, api_key=self.cfg.api_key)
+        attn_file_name = self.attention_guidance_prompt.replace(" ", "_")+"attn.pth"
+        self.attn_save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", attn_file_name)
+        # initialize the global guidance model
+        if not os.path.exists(self.attn_save_path):
+            self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
+                                                            use_safetensors=True,
+                                                            torch_dtype=torch.float16,
+                                                            cache_dir=self.cfg.cache_dir)
+            set_forward_sd3(self.global_model.transformer)
+            register_cross_attention_hook(self.global_model.transformer)
+            self.global_model = self.global_model.to("cuda")
+            self.global_model.enable_model_cpu_offload()
+            self.part_prompts = animal_part_extractor(self.cfg.prompt_processor.prompt, api_key=self.cfg.api_key)
+        else:
+            self.global_model = None
+            saved_keys = list(torch.load(self.attn_save_path).keys())
+            self.part_prompts = [key for key in saved_keys if key not in ["c2w", "width", "height", 
+                                                                                'rays_o',
+                                                                                'rays_d',
+                                                                                'mvp_mtx',
+                                                                                'camera_positions',
+                                                                                'light_positions',
+                                                                                'elevation',
+                                                                                'azimuth',
+                                                                                'camera_distances',
+                                                                                'fovy']]
+          
         self.index_by_part = {}
 
         self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
@@ -93,20 +118,8 @@ class PartDreamSystem(BaseLift3DSystem):
 
 
 
-        attn_file_name = self.attention_guidance_prompt.replace(" ", "_")+"attn.pth"
-        self.attn_save_path = os.path.join("custom/threestudio-mvdream/system/cross_attention/cache", attn_file_name)
-        # initialize the global guidance model
-        if not os.path.exists(self.attn_save_path):
-            self.global_model = DiffusionPipeline.from_pretrained(self.cfg.global_model_name,
-                                                            use_safetensors=True,
-                                                            torch_dtype=torch.float16,
-                                                            cache_dir=self.cfg.cache_dir)
-            set_forward_sd3(self.global_model.transformer)
-            register_cross_attention_hook(self.global_model.transformer)
-            self.global_model = self.global_model.to("cuda")
-            self.global_model.enable_model_cpu_offload()
-        else:
-            self.global_model = None
+       
+
         self.postprocessor = DenseCRF(
             iter_max=10,
             pos_xy_std=1,
@@ -279,12 +292,14 @@ class PartDreamSystem(BaseLift3DSystem):
             if batch_idx == self.attn_nerf_optimize_start:
                 print("Load the attention map")
                 self.attn_map_info = torch.load(self.attn_save_path)
+           
                 
                 for key, value in self.attn_map_info.items():
                     if key in list(batch.keys()):
                         self.attn_map_batches[key] = value
                     else:
-                        self.attn_map_by_token[key] = value
+                        if len(key.split(" ")) == 2:
+                            self.attn_map_by_token[key] = value
                         
 
             # optimize the attention nerf model
